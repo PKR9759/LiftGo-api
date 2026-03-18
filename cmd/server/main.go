@@ -14,7 +14,9 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/PKR9759/LiftGo-api/internal/auth"
+	"github.com/PKR9759/LiftGo-api/internal/booking"
 	"github.com/PKR9759/LiftGo-api/internal/db"
+	"github.com/PKR9759/LiftGo-api/internal/review"
 	"github.com/PKR9759/LiftGo-api/internal/ride"
 	"github.com/PKR9759/LiftGo-api/internal/seek"
 	"github.com/PKR9759/LiftGo-api/internal/user"
@@ -39,11 +41,15 @@ func main() {
 	}
 	log.Println("migrations complete")
 
-	authHandler := auth.NewHandler(auth.NewService(pool))
-	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
-	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)))
-	seekHandler := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
+	// ── handlers ────────────────────────────────────────────
+	authHandler    := auth.NewHandler(auth.NewService(pool))
+	userHandler    := user.NewHandler(user.NewService(user.NewRepository(pool)))
+	rideHandler    := ride.NewHandler(ride.NewService(ride.NewRepository(pool)))
+	seekHandler    := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
+	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)))
+	reviewHandler  := review.NewHandler(review.NewService(review.NewRepository(pool)))
 
+	// ── router ───────────────────────────────────────────────
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -59,44 +65,61 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
+	// ── auth ─────────────────────────────────────────────────
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Post("/register", authHandler.Register)
-		r.Post("/login", authHandler.Login)
+		r.Post("/login",    authHandler.Login)
 	})
 
+	// ── users ─────────────────────────────────────────────────
 	r.Route("/api/users", func(r chi.Router) {
+		r.Get("/{id}/reviews", reviewHandler.GetByReviewee)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAuth)
-			r.Get("/me", userHandler.GetMe)
-			r.Put("/me", userHandler.UpdateMe)
+			r.Get("/me",  userHandler.GetMe)
+			r.Put("/me",  userHandler.UpdateMe)
 		})
 	})
 
-	// public
+	// ── rides ─────────────────────────────────────────────────
 	r.Get("/api/rides/nearby", rideHandler.FindNearby)
-
-	// protected
 	r.Route("/api/rides", func(r chi.Router) {
 		r.Use(auth.RequireAuth)
-		r.Post("/", rideHandler.Create)
-		r.Get("/mine", rideHandler.GetMine) // ← must be before /{id}
-		r.Get("/{id}", rideHandler.GetByID)
-		r.Put("/{id}", rideHandler.Update)
+		r.Post("/",       rideHandler.Create)
+		r.Get("/mine",    rideHandler.GetMine)
+		r.Get("/{id}",    rideHandler.GetByID)
+		r.Put("/{id}",    rideHandler.Update)
 		r.Delete("/{id}", rideHandler.Cancel)
 	})
 
-	// public
+	// ── seeks ─────────────────────────────────────────────────
 	r.Get("/api/seeks/nearby", seekHandler.FindNearby)
-
-	// protected
 	r.Route("/api/seeks", func(r chi.Router) {
 		r.Use(auth.RequireAuth)
-		r.Post("/", seekHandler.Create)
-		r.Get("/mine", seekHandler.GetMine) // ← must be before /{id}
-		r.Get("/{id}", seekHandler.GetByID)
+		r.Post("/",       seekHandler.Create)
+		r.Get("/mine",    seekHandler.GetMine)
+		r.Get("/{id}",    seekHandler.GetByID)
 		r.Delete("/{id}", seekHandler.Cancel)
 	})
 
+	// ── bookings ──────────────────────────────────────────────
+	r.Route("/api/bookings", func(r chi.Router) {
+		r.Use(auth.RequireAuth)
+		r.Post("/",            bookingHandler.Create)
+		r.Get("/mine",         bookingHandler.GetMine)
+		r.Get("/incoming",     bookingHandler.GetIncoming)
+		r.Get("/{id}",         bookingHandler.GetByID)
+		r.Put("/{id}/confirm", bookingHandler.Confirm)
+		r.Put("/{id}/cancel",  bookingHandler.Cancel)
+	})
+
+	// ── reviews ───────────────────────────────────────────────
+	r.Route("/api/reviews", func(r chi.Router) {
+		r.Use(auth.RequireAuth)
+		r.Post("/", reviewHandler.Create)
+	})
+
+	// ── start ─────────────────────────────────────────────────
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
