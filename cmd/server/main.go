@@ -1,3 +1,4 @@
+// cmd/server/main.go
 package main
 
 import (
@@ -12,7 +13,9 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/joho/godotenv"
 
+	"github.com/PKR9759/LiftGo-api/internal/auth"
 	"github.com/PKR9759/LiftGo-api/internal/db"
+	"github.com/PKR9759/LiftGo-api/internal/user"
 )
 
 func main() {
@@ -34,6 +37,9 @@ func main() {
 	}
 	log.Println("migrations complete")
 
+	authHandler := auth.NewHandler(auth.NewService(pool))
+	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -47,6 +53,19 @@ func main() {
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
+	})
+
+	r.Route("/api/auth", func(r chi.Router) {
+		r.Post("/register", authHandler.Register)
+		r.Post("/login",    authHandler.Login)
+	})
+
+	r.Route("/api/users", func(r chi.Router) {
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Get("/me",  userHandler.GetMe)
+			r.Put("/me",  userHandler.UpdateMe)
+		})
 	})
 
 	port := os.Getenv("PORT")
