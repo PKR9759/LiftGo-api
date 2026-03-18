@@ -15,8 +15,9 @@ import (
 
 	"github.com/PKR9759/LiftGo-api/internal/auth"
 	"github.com/PKR9759/LiftGo-api/internal/db"
-	"github.com/PKR9759/LiftGo-api/internal/user"
 	"github.com/PKR9759/LiftGo-api/internal/ride"
+	"github.com/PKR9759/LiftGo-api/internal/seek"
+	"github.com/PKR9759/LiftGo-api/internal/user"
 )
 
 func main() {
@@ -41,6 +42,7 @@ func main() {
 	authHandler := auth.NewHandler(auth.NewService(pool))
 	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
 	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)))
+	seekHandler := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -59,29 +61,42 @@ func main() {
 
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Post("/register", authHandler.Register)
-		r.Post("/login",    authHandler.Login)
+		r.Post("/login", authHandler.Login)
 	})
 
 	r.Route("/api/users", func(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAuth)
-			r.Get("/me",  userHandler.GetMe)
-			r.Put("/me",  userHandler.UpdateMe)
+			r.Get("/me", userHandler.GetMe)
+			r.Put("/me", userHandler.UpdateMe)
 		})
 	})
 
-	// public rides routes
+	// public
 	r.Get("/api/rides/nearby", rideHandler.FindNearby)
-	r.Get("/api/rides/{id}",   rideHandler.GetByID)
 
-	// protected rides routes
+	// protected
 	r.Route("/api/rides", func(r chi.Router) {
 		r.Use(auth.RequireAuth)
-		r.Post("/",       rideHandler.Create)
-		r.Get("/mine",    rideHandler.GetMine)
-		r.Put("/{id}",    rideHandler.Update)
+		r.Post("/", rideHandler.Create)
+		r.Get("/mine", rideHandler.GetMine) // ← must be before /{id}
+		r.Get("/{id}", rideHandler.GetByID)
+		r.Put("/{id}", rideHandler.Update)
 		r.Delete("/{id}", rideHandler.Cancel)
 	})
+
+	// public
+	r.Get("/api/seeks/nearby", seekHandler.FindNearby)
+
+	// protected
+	r.Route("/api/seeks", func(r chi.Router) {
+		r.Use(auth.RequireAuth)
+		r.Post("/", seekHandler.Create)
+		r.Get("/mine", seekHandler.GetMine) // ← must be before /{id}
+		r.Get("/{id}", seekHandler.GetByID)
+		r.Delete("/{id}", seekHandler.Cancel)
+	})
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
