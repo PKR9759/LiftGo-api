@@ -16,6 +16,7 @@ import (
 	"github.com/PKR9759/LiftGo-api/internal/auth"
 	"github.com/PKR9759/LiftGo-api/internal/db"
 	"github.com/PKR9759/LiftGo-api/internal/user"
+	"github.com/PKR9759/LiftGo-api/internal/ride"
 )
 
 func main() {
@@ -39,6 +40,7 @@ func main() {
 
 	authHandler := auth.NewHandler(auth.NewService(pool))
 	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
+	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)))
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -68,6 +70,18 @@ func main() {
 		})
 	})
 
+	// public rides routes
+	r.Get("/api/rides/nearby", rideHandler.FindNearby)
+	r.Get("/api/rides/{id}",   rideHandler.GetByID)
+
+	// protected rides routes
+	r.Route("/api/rides", func(r chi.Router) {
+		r.Use(auth.RequireAuth)
+		r.Post("/",       rideHandler.Create)
+		r.Get("/mine",    rideHandler.GetMine)
+		r.Put("/{id}",    rideHandler.Update)
+		r.Delete("/{id}", rideHandler.Cancel)
+	})
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
