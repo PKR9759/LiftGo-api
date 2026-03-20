@@ -16,12 +16,13 @@ type Booking struct {
 	DepartureAt time.Time `json:"departure_at"`
 	Seats       int       `json:"seats"`
 	Status      string    `json:"status"`
+	RideStatus  string    `json:"ride_status"`
 	TotalPrice  float64   `json:"total_price"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
 type CreateRequest struct {
-	RideID string  `json:"ride_id"`
-	SeekID string  `json:"seek_id"`
-	Seats  int     `json:"seats"`
+	RideID string `json:"ride_id"`
+	SeekID string `json:"seek_id"`
+	Seats  int    `json:"seats"`
 }

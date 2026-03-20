@@ -102,7 +102,7 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Booking, error) {
 		        ri.driver_id, ud.name,
 		        b.seek_id,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
-		        b.seats, b.status, b.total_price, b.created_at
+		        b.seats, b.status, ri.status, b.total_price, b.created_at
 		 FROM bookings b
 		 JOIN users  ur ON ur.id = b.rider_id
 		 JOIN rides  ri ON ri.id = b.ride_id
@@ -113,7 +113,7 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Booking, error) {
 		&b.DriverID, &b.DriverName,
 		&b.SeekID,
 		&b.OriginLabel, &b.DestLabel, &b.DepartureAt,
-		&b.Seats, &b.Status, &b.TotalPrice, &b.CreatedAt,
+		&b.Seats, &b.Status, &b.RideStatus, &b.TotalPrice, &b.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -127,7 +127,7 @@ func (r *Repository) GetByRider(ctx context.Context, riderID string) ([]*Booking
 		        ri.driver_id, ud.name,
 		        b.seek_id,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
-		        b.seats, b.status, b.total_price, b.created_at
+		        b.seats, b.status, ri.status, b.total_price, b.created_at
 		 FROM bookings b
 		 JOIN users  ur ON ur.id = b.rider_id
 		 JOIN rides  ri ON ri.id = b.ride_id
@@ -148,7 +148,7 @@ func (r *Repository) GetIncoming(ctx context.Context, driverID string) ([]*Booki
 		        ri.driver_id, ud.name,
 		        b.seek_id,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
-		        b.seats, b.status, b.total_price, b.created_at
+		        b.seats, b.status, ri.status, b.total_price, b.created_at
 		 FROM bookings b
 		 JOIN users  ur ON ur.id = b.rider_id
 		 JOIN rides  ri ON ri.id = b.ride_id
@@ -221,7 +221,7 @@ func scanBookings(rows interface {
 			&b.DriverID, &b.DriverName,
 			&b.SeekID,
 			&b.OriginLabel, &b.DestLabel, &b.DepartureAt,
-			&b.Seats, &b.Status, &b.TotalPrice, &b.CreatedAt,
+			&b.Seats, &b.Status, &b.RideStatus, &b.TotalPrice, &b.CreatedAt,
 		)
 		if err != nil {
 			return nil, err
