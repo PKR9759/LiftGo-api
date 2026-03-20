@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/PKR9759/LiftGo-api/internal/auth"
 	"github.com/PKR9759/LiftGo-api/internal/utils"
+	"github.com/go-chi/chi/v5"
 )
 
 type Handler struct {
@@ -23,9 +23,9 @@ func NewHandler(service *Service) *Handler {
 func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 	originLat, _ := strconv.ParseFloat(r.URL.Query().Get("origin_lat"), 64)
 	originLng, _ := strconv.ParseFloat(r.URL.Query().Get("origin_lng"), 64)
-	destLat, _   := strconv.ParseFloat(r.URL.Query().Get("dest_lat"),   64)
-	destLng, _   := strconv.ParseFloat(r.URL.Query().Get("dest_lng"),   64)
-	radius, _    := strconv.ParseFloat(r.URL.Query().Get("radius"),     64)
+	destLat, _ := strconv.ParseFloat(r.URL.Query().Get("dest_lat"), 64)
+	destLng, _ := strconv.ParseFloat(r.URL.Query().Get("dest_lng"), 64)
+	radius, _ := strconv.ParseFloat(r.URL.Query().Get("radius"), 64)
 
 	rides, err := h.service.FindNearby(r.Context(), NearbyParams{
 		OriginLat:    originLat,
@@ -103,6 +103,25 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteJSON(w, http.StatusOK, ride)
+}
+
+// PUT /api/rides/:id/status
+func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetUserFromContext(r)
+	id := chi.URLParam(r, "id")
+
+	var req UpdateStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.service.UpdateStatus(r.Context(), id, claims.UserID, req.Status); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "status updated to " + req.Status})
 }
 
 // DELETE /api/rides/:id

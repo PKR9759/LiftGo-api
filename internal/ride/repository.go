@@ -205,6 +205,21 @@ func (r *Repository) Update(ctx context.Context, id, driverID string, req Update
 	return ride, nil
 }
 
+func (r *Repository) UpdateStatus(ctx context.Context, id, driverID, status string) error {
+	result, err := r.db.Exec(ctx,
+		`UPDATE rides SET status = $1, updated_at = now()
+		 WHERE id = $2 AND driver_id = $3`,
+		status, id, driverID,
+	)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("ride not found or you are not the driver")
+	}
+	return nil
+}
+
 func (r *Repository) Cancel(ctx context.Context, id, driverID string) error {
 	result, err := r.db.Exec(ctx,
 		`UPDATE rides SET status = 'cancelled', updated_at = now()

@@ -98,6 +98,13 @@ func (s *Service) Update(ctx context.Context, id, driverID string, req UpdateReq
 	return ride, err
 }
 
+func (s *Service) UpdateStatus(ctx context.Context, id, driverID, status string) error {
+	if status != "active" && status != "completed" {
+		return errors.New("invalid status: must be active or completed")
+	}
+	return s.repo.UpdateStatus(ctx, id, driverID, status)
+}
+
 func (s *Service) Cancel(ctx context.Context, id, driverID string) error {
 	return s.repo.Cancel(ctx, id, driverID)
 }

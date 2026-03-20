@@ -42,12 +42,12 @@ func main() {
 	log.Println("migrations complete")
 
 	// ── handlers ────────────────────────────────────────────
-	authHandler    := auth.NewHandler(auth.NewService(pool))
-	userHandler    := user.NewHandler(user.NewService(user.NewRepository(pool)))
-	rideHandler    := ride.NewHandler(ride.NewService(ride.NewRepository(pool)))
-	seekHandler    := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
+	authHandler := auth.NewHandler(auth.NewService(pool))
+	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
+	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)))
+	seekHandler := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
 	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)))
-	reviewHandler  := review.NewHandler(review.NewService(review.NewRepository(pool)))
+	reviewHandler := review.NewHandler(review.NewService(review.NewRepository(pool)))
 
 	// ── router ───────────────────────────────────────────────
 	r := chi.NewRouter()
@@ -68,7 +68,7 @@ func main() {
 	// ── auth ─────────────────────────────────────────────────
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Post("/register", authHandler.Register)
-		r.Post("/login",    authHandler.Login)
+		r.Post("/login", authHandler.Login)
 	})
 
 	// ── users ─────────────────────────────────────────────────
@@ -76,8 +76,8 @@ func main() {
 		r.Get("/{id}/reviews", reviewHandler.GetByReviewee)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAuth)
-			r.Get("/me",  userHandler.GetMe)
-			r.Put("/me",  userHandler.UpdateMe)
+			r.Get("/me", userHandler.GetMe)
+			r.Put("/me", userHandler.UpdateMe)
 		})
 	})
 
@@ -85,10 +85,11 @@ func main() {
 	r.Get("/api/rides/nearby", rideHandler.FindNearby)
 	r.Route("/api/rides", func(r chi.Router) {
 		r.Use(auth.RequireAuth)
-		r.Post("/",       rideHandler.Create)
-		r.Get("/mine",    rideHandler.GetMine)
-		r.Get("/{id}",    rideHandler.GetByID)
-		r.Put("/{id}",    rideHandler.Update)
+		r.Post("/", rideHandler.Create)
+		r.Get("/mine", rideHandler.GetMine)
+		r.Get("/{id}", rideHandler.GetByID)
+		r.Put("/{id}", rideHandler.Update)
+		r.Put("/{id}/status", rideHandler.UpdateStatus)
 		r.Delete("/{id}", rideHandler.Cancel)
 	})
 
@@ -96,21 +97,21 @@ func main() {
 	r.Get("/api/seeks/nearby", seekHandler.FindNearby)
 	r.Route("/api/seeks", func(r chi.Router) {
 		r.Use(auth.RequireAuth)
-		r.Post("/",       seekHandler.Create)
-		r.Get("/mine",    seekHandler.GetMine)
-		r.Get("/{id}",    seekHandler.GetByID)
+		r.Post("/", seekHandler.Create)
+		r.Get("/mine", seekHandler.GetMine)
+		r.Get("/{id}", seekHandler.GetByID)
 		r.Delete("/{id}", seekHandler.Cancel)
 	})
 
 	// ── bookings ──────────────────────────────────────────────
 	r.Route("/api/bookings", func(r chi.Router) {
 		r.Use(auth.RequireAuth)
-		r.Post("/",            bookingHandler.Create)
-		r.Get("/mine",         bookingHandler.GetMine)
-		r.Get("/incoming",     bookingHandler.GetIncoming)
-		r.Get("/{id}",         bookingHandler.GetByID)
+		r.Post("/", bookingHandler.Create)
+		r.Get("/mine", bookingHandler.GetMine)
+		r.Get("/incoming", bookingHandler.GetIncoming)
+		r.Get("/{id}", bookingHandler.GetByID)
 		r.Put("/{id}/confirm", bookingHandler.Confirm)
-		r.Put("/{id}/cancel",  bookingHandler.Cancel)
+		r.Put("/{id}/cancel", bookingHandler.Cancel)
 	})
 
 	// ── reviews ───────────────────────────────────────────────

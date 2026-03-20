@@ -57,3 +57,7 @@ type NearbyParams struct {
 	DestLng     float64 `json:"dest_lng"`
 	RadiusMeters float64 `json:"radius_meters"`
 }
+
+type UpdateStatusRequest struct {
+	Status string `json:"status"`
+}
