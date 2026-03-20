@@ -20,6 +20,7 @@ import (
 	"github.com/PKR9759/LiftGo-api/internal/ride"
 	"github.com/PKR9759/LiftGo-api/internal/seek"
 	"github.com/PKR9759/LiftGo-api/internal/user"
+	"github.com/PKR9759/LiftGo-api/internal/ws"
 )
 
 func main() {
@@ -41,6 +42,10 @@ func main() {
 	}
 	log.Println("migrations complete")
 
+	// ── websocket hub ───────────────────────────────────────
+	hub := ws.NewHub()
+	go hub.Run()
+
 	// ── handlers ────────────────────────────────────────────
 	authHandler := auth.NewHandler(auth.NewService(pool))
 	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
@@ -48,6 +53,7 @@ func main() {
 	seekHandler := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
 	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)))
 	reviewHandler := review.NewHandler(review.NewService(review.NewRepository(pool)))
+	wsHandler := ws.NewHandler(hub, pool, []byte(os.Getenv("JWT_SECRET")))
 
 	// ── router ───────────────────────────────────────────────
 	r := chi.NewRouter()
@@ -119,6 +125,11 @@ func main() {
 		r.Use(auth.RequireAuth)
 		r.Post("/", reviewHandler.Create)
 	})
+
+	// ── websocket routes ──────────────────────────────────────
+	// Mounted outside auth middleware because token is tested manually via query param
+	r.Get("/ws/driver/{bookingID}", wsHandler.DriverWS)
+	r.Get("/ws/rider/{bookingID}", wsHandler.RiderWS)
 
 	// ── start ─────────────────────────────────────────────────
 	port := os.Getenv("PORT")
