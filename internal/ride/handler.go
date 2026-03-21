@@ -2,21 +2,31 @@
 package ride
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/PKR9759/LiftGo-api/internal/auth"
+	"github.com/PKR9759/LiftGo-api/internal/notification"
 	"github.com/PKR9759/LiftGo-api/internal/utils"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Handler struct {
-	service *Service
+	service     *Service
+	db          *pgxpool.Pool
+	emailClient *notification.EmailClient
 }
 
-func NewHandler(service *Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.EmailClient) *Handler {
+	return &Handler{
+		service:     service,
+		db:          db,
+		emailClient: emailClient,
+	}
 }
 
 // GET /api/rides/nearby?origin_lat=&origin_lng=&dest_lat=&dest_lng=&radius=
@@ -120,6 +130,57 @@ func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	go func() {
+		if req.Status != "active" && req.Status != "completed" {
+			return
+		}
+
+		ctx := context.Background()
+
+		var driverName, driverEmail string
+		err := h.db.QueryRow(ctx, "SELECT name, email FROM users WHERE id = $1", claims.UserID).Scan(&driverName, &driverEmail)
+		if err != nil {
+			log.Printf("Failed to fetch driver details for ride notification: %v", err)
+			return
+		}
+
+		rows, err := h.db.Query(ctx,
+			`SELECT u.email, u.name
+			 FROM bookings b
+			 JOIN users u ON u.id = b.rider_id
+			 WHERE b.ride_id = $1 AND b.status = 'confirmed'`,
+			id,
+		)
+		if err != nil {
+			log.Printf("Failed to query confirmed bookings for ride notification: %v", err)
+			return
+		}
+		defer rows.Close()
+
+		type RiderInfo struct {
+			Email string
+			Name  string
+		}
+		var riders []RiderInfo
+		for rows.Next() {
+			var ri RiderInfo
+			if err := rows.Scan(&ri.Email, &ri.Name); err == nil {
+				riders = append(riders, ri)
+			}
+		}
+
+		if req.Status == "active" {
+			for _, ri := range riders {
+				h.emailClient.SendDriverStartedRideToRider(ri.Email, ri.Name, driverName)
+			}
+		} else if req.Status == "completed" {
+			for _, ri := range riders {
+				h.emailClient.SendRideCompletedToRider(ri.Email, ri.Name, driverName)
+				h.emailClient.SendRideCompletedToDriver(driverEmail, driverName, ri.Name)
+			}
+		}
+	}()
 
 	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "status updated to " + req.Status})
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/PKR9759/LiftGo-api/internal/auth"
 	"github.com/PKR9759/LiftGo-api/internal/booking"
 	"github.com/PKR9759/LiftGo-api/internal/db"
+	"github.com/PKR9759/LiftGo-api/internal/notification"
 	"github.com/PKR9759/LiftGo-api/internal/review"
 	"github.com/PKR9759/LiftGo-api/internal/ride"
 	"github.com/PKR9759/LiftGo-api/internal/seek"
@@ -46,12 +47,15 @@ func main() {
 	hub := ws.NewHub()
 	go hub.Run()
 
+	// ── email notifications ─────────────────────────────────
+	emailClient := notification.NewEmailClient()
+
 	// ── handlers ────────────────────────────────────────────
 	authHandler := auth.NewHandler(auth.NewService(pool))
 	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
-	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)))
+	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)), pool, emailClient)
 	seekHandler := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
-	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)))
+	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)), pool, emailClient)
 	reviewHandler := review.NewHandler(review.NewService(review.NewRepository(pool)))
 	wsHandler := ws.NewHandler(hub, pool, []byte(os.Getenv("JWT_SECRET")))
 
