@@ -47,15 +47,16 @@ func main() {
 	hub := ws.NewHub()
 	go hub.Run()
 
-	// ── email notifications ─────────────────────────────────
+	// ── notifications ───────────────────────────────────────
 	emailClient := notification.NewEmailClient()
+	pushClient := notification.NewPushClient(pool)
 
 	// ── handlers ────────────────────────────────────────────
 	authHandler := auth.NewHandler(auth.NewService(pool))
 	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
-	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)), pool, emailClient)
+	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)), pool, emailClient, pushClient)
 	seekHandler := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
-	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)), pool, emailClient)
+	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)), pool, emailClient, pushClient)
 	reviewHandler := review.NewHandler(review.NewService(review.NewRepository(pool)))
 	wsHandler := ws.NewHandler(hub, pool, []byte(os.Getenv("JWT_SECRET")))
 
@@ -89,6 +90,12 @@ func main() {
 			r.Get("/me", userHandler.GetMe)
 			r.Put("/me", userHandler.UpdateMe)
 		})
+	})
+
+	// ── notifications ────────────────────────────────────────
+	r.Group(func(r chi.Router) {
+		r.Use(auth.RequireAuth)
+		r.Post("/api/push/subscribe", notification.SubscribeHandler(pushClient))
 	})
 
 	// ── rides ─────────────────────────────────────────────────

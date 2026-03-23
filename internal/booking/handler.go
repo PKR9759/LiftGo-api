@@ -18,13 +18,15 @@ type Handler struct {
 	service     *Service
 	db          *pgxpool.Pool
 	emailClient *notification.EmailClient
+	pushClient  *notification.PushClient
 }
 
-func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.EmailClient) *Handler {
+func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.EmailClient, pushClient *notification.PushClient) *Handler {
 	return &Handler{
 		service:     service,
 		db:          db,
 		emailClient: emailClient,
+		pushClient:  pushClient,
 	}
 }
 
@@ -58,6 +60,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			booking.DestLabel,
 			booking.DepartureAt,
 			booking.Seats,
+		)
+		h.pushClient.PushNewBookingRequest(
+			booking.DriverID,
+			booking.RiderName,
+			booking.OriginLabel,
+			booking.DestLabel,
 		)
 	}()
 
@@ -125,6 +133,12 @@ func (h *Handler) Confirm(w http.ResponseWriter, r *http.Request) {
 			booking.DestLabel,
 			booking.DepartureAt,
 		)
+		h.pushClient.PushBookingConfirmed(
+			booking.RiderID,
+			booking.DriverName,
+			booking.OriginLabel,
+			booking.DestLabel,
+		)
 	}()
 
 	utils.WriteJSON(w, http.StatusOK, booking)
@@ -166,6 +180,10 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 			cancelledByName,
 			booking.OriginLabel,
 			booking.DestLabel,
+		)
+		h.pushClient.PushBookingCancelled(
+			recipientID,
+			cancelledByName,
 		)
 	}()
 

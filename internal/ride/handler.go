@@ -19,13 +19,15 @@ type Handler struct {
 	service     *Service
 	db          *pgxpool.Pool
 	emailClient *notification.EmailClient
+	pushClient  *notification.PushClient
 }
 
-func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.EmailClient) *Handler {
+func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.EmailClient, pushClient *notification.PushClient) *Handler {
 	return &Handler{
 		service:     service,
 		db:          db,
 		emailClient: emailClient,
+		pushClient:  pushClient,
 	}
 }
 
@@ -146,7 +148,7 @@ func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 		}
 
 		rows, err := h.db.Query(ctx,
-			`SELECT u.email, u.name
+			`SELECT u.email, u.name, u.id
 			 FROM bookings b
 			 JOIN users u ON u.id = b.rider_id
 			 WHERE b.ride_id = $1 AND b.status = 'confirmed'`,
@@ -161,11 +163,12 @@ func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 		type RiderInfo struct {
 			Email string
 			Name  string
+			ID    string
 		}
 		var riders []RiderInfo
 		for rows.Next() {
 			var ri RiderInfo
-			if err := rows.Scan(&ri.Email, &ri.Name); err == nil {
+			if err := rows.Scan(&ri.Email, &ri.Name, &ri.ID); err == nil {
 				riders = append(riders, ri)
 			}
 		}
@@ -173,12 +176,15 @@ func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 		if req.Status == "active" {
 			for _, ri := range riders {
 				h.emailClient.SendDriverStartedRideToRider(ri.Email, ri.Name, driverName)
+				h.pushClient.PushDriverStartedRide(ri.ID, driverName)
 			}
 		} else if req.Status == "completed" {
 			for _, ri := range riders {
 				h.emailClient.SendRideCompletedToRider(ri.Email, ri.Name, driverName)
 				h.emailClient.SendRideCompletedToDriver(driverEmail, driverName, ri.Name)
+				h.pushClient.PushRideCompleted(ri.ID)
 			}
+			h.pushClient.PushRideCompleted(claims.UserID)
 		}
 	}()
 
