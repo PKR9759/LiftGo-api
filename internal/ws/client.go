@@ -72,7 +72,30 @@ func (c *Client) ReadPump() {
 			break
 		}
 
-		if c.role == "driver" {
+		var baseMsg struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(message, &baseMsg); err != nil {
+			continue // Ignore malformed messages
+		}
+
+		if baseMsg.Type == "message" {
+			var chatMsg struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+				From string `json:"from"`
+			}
+			if err := json.Unmarshal(message, &chatMsg); err == nil {
+				chatMsg.From = c.role // force the 'from' field to be the client's actual role
+				msgBytes, _ := json.Marshal(chatMsg)
+
+				// Broadcast to all clients in this booking room
+				c.hub.broadcastToRoom <- RoomMessage{
+					BookingID: c.bookingID,
+					Data:      msgBytes,
+				}
+			}
+		} else if baseMsg.Type == "location" && c.role == "driver" {
 			var loc struct {
 				Lat float64 `json:"lat"`
 				Lng float64 `json:"lng"`
@@ -87,8 +110,6 @@ func (c *Client) ReadPump() {
 				}
 				c.hub.broadcast <- msg
 			}
-		} else {
-			// Rider clients are listen-only; discard any incoming messages
 		}
 	}
 }
@@ -111,20 +132,8 @@ func (c *Client) WritePump() {
 				return
 			}
 
-			w, err := c.conn.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			w.Write(message)
-
-			// Fast-flush any queued messages
-			n := len(c.send)
-			for i := 0; i < n; i++ {
-				w.Write([]byte{'\n'})
-				w.Write(<-c.send)
-			}
-
-			if err := w.Close(); err != nil {
+			// Write each message as its own frame — no batching
+			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
 				return
 			}
 

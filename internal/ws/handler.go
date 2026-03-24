@@ -66,7 +66,7 @@ func (h *Handler) DriverWS(w http.ResponseWriter, r *http.Request) {
 		SELECT EXISTS(
 			SELECT 1 FROM bookings b
 			JOIN rides ride ON b.ride_id = ride.id
-			WHERE b.id = $1 AND ride.driver_id = $2 AND b.status = 'confirmed'
+			WHERE b.id = $1 AND ride.driver_id = $2 AND b.status IN ('confirmed', 'rider_ready', 'picked_up')
 		)`
 	err = h.db.QueryRow(r.Context(), query, bookingID, userID).Scan(&exists)
 	if err != nil {
@@ -116,7 +116,7 @@ func (h *Handler) RiderWS(w http.ResponseWriter, r *http.Request) {
 	query := `
 		SELECT EXISTS(
 			SELECT 1 FROM bookings b
-			WHERE b.id = $1 AND b.rider_id = $2 AND b.status = 'confirmed'
+			WHERE b.id = $1 AND b.rider_id = $2 AND b.status IN ('confirmed', 'rider_ready', 'picked_up')
 		)`
 	err = h.db.QueryRow(r.Context(), query, bookingID, userID).Scan(&exists)
 	if err != nil {

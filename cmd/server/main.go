@@ -56,7 +56,7 @@ func main() {
 	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
 	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)), pool, emailClient, pushClient)
 	seekHandler := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
-	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)), pool, emailClient, pushClient)
+	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)), pool, emailClient, pushClient, hub)
 	reviewHandler := review.NewHandler(review.NewService(review.NewRepository(pool)))
 	wsHandler := ws.NewHandler(hub, pool, []byte(os.Getenv("JWT_SECRET")))
 
@@ -108,6 +108,9 @@ func main() {
 		r.Put("/{id}", rideHandler.Update)
 		r.Put("/{id}/status", rideHandler.UpdateStatus)
 		r.Delete("/{id}", rideHandler.Cancel)
+		// new ride level handlers mapped to bookingHandler logically
+		r.Get("/{id}/bookings", bookingHandler.GetRideBookings)
+		r.Put("/{id}/start-ride", bookingHandler.StartRide)
 	})
 
 	// ── seeks ─────────────────────────────────────────────────
@@ -129,6 +132,10 @@ func main() {
 		r.Get("/{id}", bookingHandler.GetByID)
 		r.Put("/{id}/confirm", bookingHandler.Confirm)
 		r.Put("/{id}/cancel", bookingHandler.Cancel)
+		r.Put("/{id}/rider-ready", bookingHandler.RiderReady)
+		r.Put("/{id}/picked-up", bookingHandler.PickedUp)
+		r.Put("/{id}/dropped", bookingHandler.Dropped)
+		r.Put("/{id}/no-show", bookingHandler.NoShow)
 	})
 
 	// ── reviews ───────────────────────────────────────────────

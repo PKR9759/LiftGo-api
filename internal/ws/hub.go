@@ -2,6 +2,7 @@ package ws
 
 import (
 	"encoding/json"
+	"log"
 )
 
 // LocationMessage represents a coordinate update sent by the driver
@@ -12,6 +13,12 @@ type LocationMessage struct {
 	Timestamp int64   `json:"timestamp"`
 }
 
+// RoomMessage represents a raw JSON message broadcast to everyone in a room
+type RoomMessage struct {
+	BookingID string
+	Data      []byte
+}
+
 // Hub maintains the set of active clients (grouped by bookingID)
 // and broadcasts messages to the clients.
 type Hub struct {
@@ -19,7 +26,8 @@ type Hub struct {
 	rooms map[string]map[*Client]bool
 
 	// Inbound messages from the clients.
-	broadcast chan LocationMessage
+	broadcast       chan LocationMessage
+	broadcastToRoom chan RoomMessage
 
 	// Register requests from the clients.
 	register chan *Client
@@ -31,10 +39,11 @@ type Hub struct {
 // NewHub creates a new Hub pointer
 func NewHub() *Hub {
 	return &Hub{
-		broadcast:  make(chan LocationMessage),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		rooms:      make(map[string]map[*Client]bool),
+		broadcast:       make(chan LocationMessage),
+		broadcastToRoom: make(chan RoomMessage),
+		register:        make(chan *Client),
+		unregister:      make(chan *Client),
+		rooms:           make(map[string]map[*Client]bool),
 	}
 }
 
@@ -87,6 +96,30 @@ func (h *Hub) Run() {
 					delete(h.rooms, msg.BookingID)
 				}
 			}
+
+		case msg := <-h.broadcastToRoom:
+			if room, ok := h.rooms[msg.BookingID]; ok {
+				log.Printf("WS Hub: Broadcasting room message to %d clients in room %s", len(room), msg.BookingID)
+				for client := range room {
+					select {
+					case client.send <- msg.Data:
+					default:
+						close(client.send)
+						delete(room, client)
+					}
+				}
+				if len(room) == 0 {
+					delete(h.rooms, msg.BookingID)
+				}
+			}
 		}
+	}
+}
+
+// BroadcastToRoom sends a raw data message to all clients in a specific booking room
+func (h *Hub) BroadcastToRoom(bookingID string, data []byte) {
+	h.broadcastToRoom <- RoomMessage{
+		BookingID: bookingID,
+		Data:      data,
 	}
 }

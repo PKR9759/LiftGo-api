@@ -57,3 +57,52 @@ func (s *Service) Confirm(ctx context.Context, id, driverID string) (*Booking, e
 func (s *Service) Cancel(ctx context.Context, id, actorID, role string) (*Booking, error) {
 	return s.repo.UpdateStatus(ctx, id, actorID, "cancelled", role)
 }
+
+func (s *Service) GetRideBookingsWithRiderInfo(ctx context.Context, rideID, driverID string) ([]*BookingWithRiderInfo, error) {
+	list, err := s.repo.GetRideBookingsWithRiderInfo(ctx, rideID, driverID)
+	if err != nil {
+		return nil, err
+	}
+	if list == nil {
+		list = []*BookingWithRiderInfo{}
+	}
+	return list, nil
+}
+
+func (s *Service) MarkRiderReady(ctx context.Context, id, riderID string, lat, lng *float64) (*Booking, error) {
+	return s.repo.MarkRiderReady(ctx, id, riderID, lat, lng)
+}
+
+func (s *Service) MarkPickedUp(ctx context.Context, id, driverID string) (*Booking, error) {
+	return s.repo.MarkPickedUp(ctx, id, driverID)
+}
+
+// MarkDropped returns the updated booking, and a boolean indicating if the entire ride is now completed
+func (s *Service) MarkDropped(ctx context.Context, id, driverID string) (*Booking, bool, error) {
+	b, err := s.repo.MarkDropped(ctx, id, driverID)
+	if err != nil {
+		return nil, false, err
+	}
+	completed, err := s.repo.CheckAndUpdateRideCompletion(ctx, b.RideID)
+	if err != nil {
+		return nil, false, err // atomic status check failed
+	}
+	return b, completed, nil
+}
+
+// MarkNoShow returns the updated booking, and a boolean indicating if the entire ride is now completed
+func (s *Service) MarkNoShow(ctx context.Context, id, driverID string) (*Booking, bool, error) {
+	b, err := s.repo.MarkNoShow(ctx, id, driverID)
+	if err != nil {
+		return nil, false, err
+	}
+	completed, err := s.repo.CheckAndUpdateRideCompletion(ctx, b.RideID)
+	if err != nil {
+		return nil, false, err // atomic status check failed
+	}
+	return b, completed, nil
+}
+
+func (s *Service) CheckDriverLocation(ctx context.Context, bookingID string, lat, lng float64) (bool, error) {
+	return s.repo.CheckDriverLocation(ctx, bookingID, lat, lng)
+}

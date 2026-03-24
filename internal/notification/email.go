@@ -26,6 +26,14 @@ func NewEmailClient() *EmailClient {
 	}
 }
 
+func (c *EmailClient) getRecipient(actualEmail string) string {
+	// In test mode, override all recipients to your verified email
+	if testEmail := os.Getenv("RESEND_TEST_RECIPIENT"); testEmail != "" {
+		return testEmail
+	}
+	return actualEmail
+}
+
 func (c *EmailClient) SendNewBookingRequestToDriver(driverEmail, driverName, riderName, origin, destination string, departureTime time.Time, seats int) {
 	go func() {
 		subject := "New booking request — LiftGo"
@@ -40,7 +48,7 @@ func (c *EmailClient) SendNewBookingRequestToDriver(driverEmail, driverName, rid
 
 		params := &resend.SendEmailRequest{
 			From:    c.senderEmail,
-			To:      []string{driverEmail},
+			To:      []string{c.getRecipient(driverEmail)},
 			Subject: subject,
 			Html:    htmlBody,
 		}
@@ -66,7 +74,7 @@ func (c *EmailClient) SendBookingConfirmedToRider(riderEmail, riderName, driverN
 
 		params := &resend.SendEmailRequest{
 			From:    c.senderEmail,
-			To:      []string{riderEmail},
+			To:      []string{c.getRecipient(riderEmail)},
 			Subject: subject,
 			Html:    htmlBody,
 		}
@@ -91,7 +99,7 @@ func (c *EmailClient) SendDriverStartedRideToRider(riderEmail, riderName, driver
 
 		params := &resend.SendEmailRequest{
 			From:    c.senderEmail,
-			To:      []string{riderEmail},
+			To:      []string{c.getRecipient(riderEmail)},
 			Subject: subject,
 			Html:    htmlBody,
 		}
@@ -116,7 +124,7 @@ func (c *EmailClient) SendRideCompletedToRider(riderEmail, riderName, driverName
 
 		params := &resend.SendEmailRequest{
 			From:    c.senderEmail,
-			To:      []string{riderEmail},
+			To:      []string{c.getRecipient(riderEmail)},
 			Subject: subject,
 			Html:    htmlBody,
 		}
@@ -141,7 +149,7 @@ func (c *EmailClient) SendRideCompletedToDriver(driverEmail, driverName, riderNa
 
 		params := &resend.SendEmailRequest{
 			From:    c.senderEmail,
-			To:      []string{driverEmail},
+			To:      []string{c.getRecipient(driverEmail)},
 			Subject: subject,
 			Html:    htmlBody,
 		}
@@ -166,7 +174,7 @@ func (c *EmailClient) SendBookingCancelled(recipientEmail, recipientName, cancel
 
 		params := &resend.SendEmailRequest{
 			From:    c.senderEmail,
-			To:      []string{recipientEmail},
+			To:      []string{c.getRecipient(recipientEmail)},
 			Subject: subject,
 			Html:    htmlBody,
 		}

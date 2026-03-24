@@ -37,7 +37,13 @@ func (c *PushClient) SaveSubscription(userID string, endpoint, p256dh, auth stri
 	return err
 }
 
-func (c *PushClient) SendToUser(userID string, title, body string) {
+func (c *PushClient) SendToUser(userID string, title, body, url string) {
+	enabled := os.Getenv("NOTIFICATIONS_ENABLED")
+	if enabled != "true" {
+		log.Printf("Push: Notifications disabled (NOTIFICATIONS_ENABLED=%s). Skipping push to %s", enabled, userID)
+		return
+	}
+	log.Printf("Push: Sending notification to user %s: %s", userID, title)
 	go func() {
 		ctx := context.Background()
 		rows, err := c.db.Query(ctx, "SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1", userID)
@@ -69,6 +75,7 @@ func (c *PushClient) SendToUser(userID string, title, body string) {
 		payloadBytes, _ := json.Marshal(map[string]string{
 			"title": title,
 			"body":  body,
+			"url":   url,
 		})
 
 		for _, s := range subs {
@@ -106,29 +113,47 @@ func (c *PushClient) SendToUser(userID string, title, body string) {
 func (c *PushClient) PushNewBookingRequest(driverUserID string, riderName, origin, destination string) {
 	title := "New Booking Request"
 	body := riderName + " requested a seat from " + origin + " to " + destination
-	c.SendToUser(driverUserID, title, body)
+	c.SendToUser(driverUserID, title, body, "/bookings")
 }
 
 func (c *PushClient) PushBookingConfirmed(riderUserID string, driverName, origin, destination string) {
 	title := "Booking Confirmed"
 	body := "Your ride with " + driverName + " from " + origin + " to " + destination + " is confirmed"
-	c.SendToUser(riderUserID, title, body)
+	c.SendToUser(riderUserID, title, body, "/bookings")
 }
 
 func (c *PushClient) PushDriverStartedRide(riderUserID string, driverName string) {
 	title := "Driver is on the way"
 	body := driverName + " has started the ride and is on their way"
-	c.SendToUser(riderUserID, title, body)
+	c.SendToUser(riderUserID, title, body, "/bookings")
 }
 
 func (c *PushClient) PushRideCompleted(userID string) {
 	title := "Trip Completed"
 	body := "Your trip has been completed. Please leave a review!"
-	c.SendToUser(userID, title, body)
+	c.SendToUser(userID, title, body, "/bookings")
 }
 
 func (c *PushClient) PushBookingCancelled(recipientUserID string, cancelledByName string) {
 	title := "Booking Cancelled"
 	body := cancelledByName + " has cancelled the booking"
-	c.SendToUser(recipientUserID, title, body)
+	c.SendToUser(recipientUserID, title, body, "/bookings")
+}
+
+func (c *PushClient) PushRiderReady(driverUserID string, riderName string) {
+	title := "Rider at pickup"
+	body := riderName + " is at the pickup point"
+	c.SendToUser(driverUserID, title, body, "/rides")
+}
+
+func (c *PushClient) PushDriverPickedUp(riderUserID string) {
+	title := "Ride Started"
+	body := "You've been picked up — enjoy your ride!"
+	c.SendToUser(riderUserID, title, body, "/bookings")
+}
+
+func (c *PushClient) PushNoShow(riderUserID string) {
+	title := "No Show"
+	body := "You were marked as no-show for this ride"
+	c.SendToUser(riderUserID, title, body, "/bookings")
 }
