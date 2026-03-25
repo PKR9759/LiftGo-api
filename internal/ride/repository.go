@@ -4,6 +4,7 @@ package ride
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +19,8 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 }
 
 func (r *Repository) Create(ctx context.Context, driverID string, req CreateRequest) (*Ride, error) {
+	log.Printf("[RideRepo] Creating ride for driver: %s, departing: %s", driverID, req.DepartureAt)
+
 	departure, err := time.Parse(time.RFC3339, req.DepartureAt)
 	if err != nil {
 		return nil, fmt.Errorf("invalid departure_at format, use ISO 8601")
@@ -36,7 +39,7 @@ func (r *Repository) Create(ctx context.Context, driverID string, req CreateRequ
 			dest_lat,   dest_lng,   dest_label,
 			route,
 			departure_at, total_seats, available_seats,
-			price_per_seat, is_recurring, recurrence_days, notes
+			price_per_seat, is_recurring, recurrence_days, notes, status
 		)
 		SELECT
 			$1,
@@ -44,7 +47,7 @@ func (r *Repository) Create(ctx context.Context, driverID string, req CreateRequ
 			$5, $6, $7,
 			ST_MakeLine(pts.origin_pt, pts.dest_pt),
 			$8, $9, $9,
-			$10, $11, $12, $13
+			$10, $11, $12, $13, 'scheduled'
 		FROM pts
 		RETURNING
 			id, driver_id,
@@ -68,8 +71,10 @@ func (r *Repository) Create(ctx context.Context, driverID string, req CreateRequ
 		&ride.Notes, &ride.Status, &ride.CreatedAt,
 	)
 	if err != nil {
+		log.Printf("[RideRepo] Failed to create ride: %v", err)
 		return nil, err
 	}
+	log.Printf("[RideRepo] Ride created successfully: %s (status: %s)", ride.ID, ride.Status)
 	return ride, nil
 }
 
@@ -109,6 +114,8 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Ride, e
 		radius = 1500 // default 1.5km
 	}
 
+	log.Printf("[RideRepo] Searching nearby: origin=(%f,%f), dest=(%f,%f), radius=%fm", p.OriginLat, p.OriginLng, p.DestLat, p.DestLng, radius)
+
 	rows, err := r.db.Query(ctx,
 		`SELECT r.id, r.driver_id, u.name, u.avg_rating, u.total_reviews,
 		        r.origin_lat, r.origin_lng, r.origin_label,
@@ -118,9 +125,9 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Ride, e
 		        r.notes, r.status, r.created_at
 		 FROM rides r
 		 JOIN users u ON u.id = r.driver_id
-		 WHERE r.status = 'active'
+		 WHERE r.status IN ('scheduled', 'active')
 		   AND r.available_seats > 0
-		   AND r.departure_at > now()
+		   AND r.departure_at > (now() - interval '1 hour')
 		   AND ST_DWithin(
 		         r.route::geography,
 		         ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
@@ -137,14 +144,21 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Ride, e
 		radius,
 	)
 	if err != nil {
+		log.Printf("[RideRepo] FindNearby error: %v", err)
 		return nil, err
 	}
 	defer rows.Close()
 
-	return scanRides(rows)
+	rides, err := scanRides(rows)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[RideRepo] FindNearby found %d rides", len(rides))
+	return rides, nil
 }
 
 func (r *Repository) GetByDriver(ctx context.Context, driverID string) ([]*Ride, error) {
+	log.Printf("[RideRepo] Fetching rides for driver: %s", driverID)
 	rows, err := r.db.Query(ctx,
 		`SELECT r.id, r.driver_id, u.name, u.avg_rating, u.total_reviews,
 		        r.origin_lat, r.origin_lng, r.origin_label,
@@ -158,10 +172,17 @@ func (r *Repository) GetByDriver(ctx context.Context, driverID string) ([]*Ride,
 		 ORDER BY r.departure_at DESC`, driverID,
 	)
 	if err != nil {
+		log.Printf("[RideRepo] GetByDriver error: %v", err)
 		return nil, err
 	}
 	defer rows.Close()
-	return scanRides(rows)
+
+	rides, err := scanRides(rows)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[RideRepo] GetByDriver found %d rides", len(rides))
+	return rides, nil
 }
 
 func (r *Repository) Update(ctx context.Context, id, driverID string, req UpdateRequest) (*Ride, error) {
@@ -238,6 +259,7 @@ func (r *Repository) Cancel(ctx context.Context, id, driverID string) error {
 func scanRides(rows interface {
 	Next() bool
 	Scan(...any) error
+	Err() error
 }) ([]*Ride, error) {
 	var rides []*Ride
 	for rows.Next() {
@@ -252,10 +274,17 @@ func scanRides(rows interface {
 			&r.Notes, &r.Status, &r.CreatedAt,
 		)
 		if err != nil {
+			log.Printf("[RideRepo] scanRides Scan error: %v", err)
 			return nil, err
 		}
 		rides = append(rides, r)
 	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("[RideRepo] scanRides rows.Err: %v", err)
+		return nil, err
+	}
+
 	return rides, nil
 }
 

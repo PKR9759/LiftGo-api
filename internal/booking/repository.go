@@ -31,7 +31,7 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		     updated_at      = now()
 		 WHERE id = $2
 		   AND available_seats >= $1
-		   AND status = 'active'
+		   AND status IN ('scheduled', 'active')
 		 RETURNING id`,
 		req.Seats, req.RideID,
 	).Scan(&rideID)

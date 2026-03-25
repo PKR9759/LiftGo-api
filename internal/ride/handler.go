@@ -39,6 +39,8 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 	destLng, _ := strconv.ParseFloat(r.URL.Query().Get("dest_lng"), 64)
 	radius, _ := strconv.ParseFloat(r.URL.Query().Get("radius"), 64)
 
+	log.Printf("[RideHandler] FindNearby: origin=(%f,%f), dest=(%f,%f), radius=%f", originLat, originLng, destLat, destLng, radius)
+
 	rides, err := h.service.FindNearby(r.Context(), NearbyParams{
 		OriginLat:    originLat,
 		OriginLng:    originLng,
@@ -47,6 +49,7 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 		RadiusMeters: radius,
 	})
 	if err != nil {
+		log.Printf("[RideHandler] FindNearby error: %v", err)
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -75,8 +78,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("[RideHandler] Create request from user: %s", claims.UserID)
+
 	ride, err := h.service.Create(r.Context(), claims.UserID, req)
 	if err != nil {
+		log.Printf("[RideHandler] Create error for user %s: %v", claims.UserID, err)
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -88,8 +94,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetMine(w http.ResponseWriter, r *http.Request) {
 	claims := auth.GetUserFromContext(r)
 
+	log.Printf("[RideHandler] GetMine request from user: %s", claims.UserID)
+
 	rides, err := h.service.GetMyRides(r.Context(), claims.UserID)
 	if err != nil {
+		log.Printf("[RideHandler] GetMine error for user %s: %v", claims.UserID, err)
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
