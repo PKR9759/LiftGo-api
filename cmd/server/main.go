@@ -66,10 +66,15 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000"},
+		AllowedOrigins:   []string{
+			"http://localhost:3000",
+			"https://liftgo.tech",
+			"https://www.liftgo.tech",
+		},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type","X-CSRF-Token"},
 		AllowCredentials: true,
+		MaxAge:           300,//Added a cache duration (in seconds) for the preflight OPTIONS requests. This stops the browser from sending a redundant CORS check before every single API call, speeding up app's overall performance.
 	}))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
