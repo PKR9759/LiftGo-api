@@ -315,8 +315,8 @@ func (h *Handler) StartRide(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusUnauthorized, "only driver can start the ride")
 		return
 	}
-	if currentStatus != "scheduled" {
-		utils.WriteError(w, http.StatusBadRequest, "ride must be scheduled")
+	if currentStatus != "scheduled" && currentStatus != "full" {
+		utils.WriteError(w, http.StatusBadRequest, "ride must be scheduled or full")
 		return
 	}
 	if time.Now().Before(departure.Add(-30 * time.Minute)) {
