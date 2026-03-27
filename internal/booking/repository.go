@@ -198,6 +198,7 @@ func (r *Repository) UpdateStatus(ctx context.Context, id, actorID, newStatus, r
 			`UPDATE rides r
 			 SET available_seats = available_seats + b.seats,
 			     status = CASE
+			       WHEN status = 'full' AND departure_at > now() THEN 'scheduled'
 			       WHEN status = 'full' THEN 'active'
 			       ELSE status
 			     END,
