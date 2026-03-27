@@ -51,11 +51,11 @@ func (s *Service) GetIncoming(ctx context.Context, driverID string) ([]*Booking,
 }
 
 func (s *Service) Confirm(ctx context.Context, id, driverID string) (*Booking, error) {
-	return s.repo.UpdateStatus(ctx, id, driverID, "confirmed", "driver")
+	return s.repo.ConfirmBooking(ctx, id, driverID)
 }
 
 func (s *Service) Cancel(ctx context.Context, id, actorID, role string) (*Booking, error) {
-	return s.repo.UpdateStatus(ctx, id, actorID, "cancelled", role)
+	return s.repo.CancelBooking(ctx, id, actorID, role)
 }
 
 func (s *Service) GetRideBookingsWithRiderInfo(ctx context.Context, rideID, driverID string) ([]*BookingWithRiderInfo, error) {

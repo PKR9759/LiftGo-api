@@ -116,6 +116,7 @@ func main() {
 		// new ride level handlers mapped to bookingHandler logically
 		r.Get("/{id}/bookings", bookingHandler.GetRideBookings)
 		r.Put("/{id}/start-ride", bookingHandler.StartRide)
+		r.Get("/{id}/status-summary", rideHandler.GetStatusSummary)
 	})
 
 	// ── seeks ─────────────────────────────────────────────────

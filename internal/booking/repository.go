@@ -23,29 +23,19 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 	}
 	defer tx.Rollback(ctx)
 
-	// atomically decrement seats — returns nothing if not enough
+	// verify ride exists, is bookable, and has enough seats (don't decrement yet)
 	var rideID string
-	err = tx.QueryRow(ctx,
-		`UPDATE rides
-		 SET available_seats = available_seats - $1,
-		     updated_at      = now()
-		 WHERE id = $2
-		   AND available_seats >= $1
-		   AND status IN ('scheduled', 'active')
-		 RETURNING id`,
-		req.Seats, req.RideID,
-	).Scan(&rideID)
-	if err != nil {
-		return nil, fmt.Errorf("not enough seats or ride is unavailable")
-	}
-
-	// get price
 	var pricePerSeat float64
 	err = tx.QueryRow(ctx,
-		`SELECT price_per_seat FROM rides WHERE id = $1`, req.RideID,
-	).Scan(&pricePerSeat)
+		`SELECT id, price_per_seat FROM rides
+		 WHERE id = $1
+		   AND available_seats >= $2
+		   AND status IN ('scheduled', 'active')
+		 FOR UPDATE`,
+		req.RideID, req.Seats,
+	).Scan(&rideID, &pricePerSeat)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("not enough seats or ride is unavailable")
 	}
 
 	totalPrice := pricePerSeat * float64(req.Seats)
@@ -56,7 +46,7 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		seekID = &req.SeekID
 	}
 
-	// insert booking
+	// insert booking as pending (seats NOT decremented yet)
 	var bookingID, status string
 	err = tx.QueryRow(ctx,
 		`INSERT INTO bookings (ride_id, rider_id, seek_id, seats, total_price)
@@ -64,15 +54,6 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		 RETURNING id, status`,
 		req.RideID, riderID, seekID, req.Seats, totalPrice,
 	).Scan(&bookingID, &status)
-	if err != nil {
-		return nil, err
-	}
-
-	// mark ride full if seats hit 0
-	_, err = tx.Exec(ctx,
-		`UPDATE rides SET status = 'full'
-		 WHERE id = $1 AND available_seats = 0`, req.RideID,
-	)
 	if err != nil {
 		return nil, err
 	}
@@ -192,8 +173,105 @@ func (r *Repository) UpdateStatus(ctx context.Context, id, actorID, newStatus, r
 		return nil, fmt.Errorf("booking not found or not authorised")
 	}
 
-	// give seat back if rider cancels
-	if role == "rider" && newStatus == "cancelled" {
+	return r.GetByID(ctx, returnedID)
+}
+
+// ConfirmBooking atomically confirms a booking and decrements seats
+func (r *Repository) ConfirmBooking(ctx context.Context, id, driverID string) (*Booking, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	// confirm the booking, verify it's pending and belongs to this driver's ride
+	var returnedID string
+	var seats int
+	var rideID string
+	err = tx.QueryRow(ctx,
+		`UPDATE bookings b
+		 SET status = 'confirmed', updated_at = now()
+		 FROM rides ri
+		 WHERE b.id = $1
+		   AND b.ride_id = ri.id
+		   AND ri.driver_id = $2
+		   AND b.status = 'pending'
+		 RETURNING b.id, b.seats, b.ride_id`,
+		id, driverID,
+	).Scan(&returnedID, &seats, &rideID)
+	if err != nil {
+		return nil, fmt.Errorf("booking not found, not pending, or not authorised")
+	}
+
+	// now decrement seats atomically
+	var updatedRideID string
+	err = tx.QueryRow(ctx,
+		`UPDATE rides
+		 SET available_seats = available_seats - $1,
+		     updated_at = now()
+		 WHERE id = $2
+		   AND available_seats >= $1
+		 RETURNING id`,
+		seats, rideID,
+	).Scan(&updatedRideID)
+	if err != nil {
+		return nil, fmt.Errorf("not enough seats to confirm this booking")
+	}
+
+	// mark ride full if seats hit 0
+	_, err = tx.Exec(ctx,
+		`UPDATE rides SET status = 'full'
+		 WHERE id = $1 AND available_seats = 0`, rideID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return r.GetByID(ctx, returnedID)
+}
+
+// CancelBooking cancels a booking and restores seats if it was confirmed
+func (r *Repository) CancelBooking(ctx context.Context, id, actorID, role string) (*Booking, error) {
+	// first get the booking's current status before cancelling
+	var currentStatus string
+	err := r.db.QueryRow(ctx,
+		`SELECT status FROM bookings WHERE id = $1`, id,
+	).Scan(&currentStatus)
+	if err != nil {
+		return nil, fmt.Errorf("booking not found")
+	}
+
+	// cancel the booking
+	var query string
+	if role == "driver" {
+		query = `
+			UPDATE bookings b
+			SET status = 'cancelled', updated_at = now()
+			FROM rides ri
+			WHERE b.id = $1
+			  AND b.ride_id = ri.id
+			  AND ri.driver_id = $2
+			RETURNING b.id`
+	} else {
+		query = `
+			UPDATE bookings
+			SET status = 'cancelled', updated_at = now()
+			WHERE id = $1 AND rider_id = $2
+			RETURNING id`
+	}
+
+	var returnedID string
+	err = r.db.QueryRow(ctx, query, id, actorID).Scan(&returnedID)
+	if err != nil {
+		return nil, fmt.Errorf("booking not found or not authorised")
+	}
+
+	// only restore seats if booking was confirmed (seats were actually decremented)
+	if currentStatus == "confirmed" || currentStatus == "rider_ready" {
 		_, err = r.db.Exec(ctx,
 			`UPDATE rides r
 			 SET available_seats = available_seats + b.seats,

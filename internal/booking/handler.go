@@ -163,7 +163,44 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	claims := auth.GetUserFromContext(r)
 	id := chi.URLParam(r, "id")
 
-	booking, err := h.service.Cancel(r.Context(), id, claims.UserID, claims.Role)
+	// Fetch booking + ride info for guards
+	var bookingStatus, rideStatus, rideDriverID string
+	var departureAt time.Time
+	err := h.db.QueryRow(r.Context(),
+		`SELECT b.status, ri.status, ri.driver_id, ri.departure_at
+		 FROM bookings b JOIN rides ri ON ri.id = b.ride_id
+		 WHERE b.id = $1`, id,
+	).Scan(&bookingStatus, &rideStatus, &rideDriverID, &departureAt)
+	if err != nil {
+		utils.WriteError(w, http.StatusNotFound, "booking not found")
+		return
+	}
+
+	// Determine actual role
+	role := "rider"
+	if rideDriverID == claims.UserID {
+		role = "driver"
+	}
+
+	// Guard 1: booking status must allow cancellation
+	if bookingStatus != "pending" && bookingStatus != "confirmed" {
+		utils.WriteError(w, http.StatusBadRequest, "This booking cannot be cancelled at this stage.")
+		return
+	}
+
+	// Guard 2: ride must not be active or completed
+	if rideStatus == "active" || rideStatus == "completed" {
+		utils.WriteError(w, http.StatusBadRequest, "Cannot cancel a ride that is already in progress.")
+		return
+	}
+
+	// Guard 3: time guard — only for confirmed bookings
+	if bookingStatus == "confirmed" && time.Until(departureAt) < time.Hour {
+		utils.WriteError(w, http.StatusBadRequest, "Confirmed bookings cannot be cancelled within 1 hour of departure.")
+		return
+	}
+
+	booking, err := h.service.Cancel(r.Context(), id, claims.UserID, role)
 	if err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return

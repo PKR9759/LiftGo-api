@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/PKR9759/LiftGo-api/internal/auth"
 	"github.com/PKR9759/LiftGo-api/internal/notification"
@@ -205,10 +206,116 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	claims := auth.GetUserFromContext(r)
 	id := chi.URLParam(r, "id")
 
+	// Fetch ride for guards
+	var rideStatus string
+	var departureAt time.Time
+	var rideDriverID string
+	err := h.db.QueryRow(r.Context(),
+		`SELECT status, departure_at, driver_id FROM rides WHERE id = $1`, id,
+	).Scan(&rideStatus, &departureAt, &rideDriverID)
+	if err != nil {
+		utils.WriteError(w, http.StatusNotFound, "ride not found")
+		return
+	}
+
+	// Guard: ownership
+	if rideDriverID != claims.UserID {
+		utils.WriteError(w, http.StatusForbidden, "you are not the driver of this ride")
+		return
+	}
+
+	// Guard: ride must be scheduled
+	if rideStatus != "scheduled" {
+		utils.WriteError(w, http.StatusBadRequest, "Cannot cancel a ride that has already started.")
+		return
+	}
+
+	// Guard: time — only if there are active bookings
+	var activeBookings int
+	h.db.QueryRow(r.Context(),
+		`SELECT count(*) FROM bookings WHERE ride_id = $1 AND status IN ('pending', 'confirmed')`, id,
+	).Scan(&activeBookings)
+
+	if activeBookings > 0 && time.Until(departureAt) < time.Hour {
+		utils.WriteError(w, http.StatusBadRequest, "Cancellations for rides with active bookings are not allowed within 1 hour of departure.")
+		return
+	}
+
 	if err := h.service.Cancel(r.Context(), id, claims.UserID); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
+	// Cascade: cancel all pending/confirmed bookings for this ride
+	h.db.Exec(r.Context(),
+		`UPDATE bookings SET status = 'cancelled', updated_at = now()
+		 WHERE ride_id = $1 AND status IN ('pending', 'confirmed')`, id,
+	)
+
 	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "ride cancelled"})
+}
+
+// GET /api/rides/:id/status-summary
+func (h *Handler) GetStatusSummary(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetUserFromContext(r)
+	id := chi.URLParam(r, "id")
+
+	// Fetch ride info
+	var rideID, rideStatus string
+	var departureAt time.Time
+	var availableSeats, totalSeats int
+	err := h.db.QueryRow(r.Context(),
+		`SELECT id, status, departure_at, available_seats, total_seats
+		 FROM rides WHERE id = $1`, id,
+	).Scan(&rideID, &rideStatus, &departureAt, &availableSeats, &totalSeats)
+	if err != nil {
+		utils.WriteError(w, http.StatusNotFound, "ride not found")
+		return
+	}
+
+	minutesUntil := time.Until(departureAt).Minutes()
+	cancellationDeadline := departureAt.Add(-1 * time.Hour).Format(time.RFC3339)
+
+	// Fetch active booking count for cancellation logic
+	var activeBookings int
+	h.db.QueryRow(r.Context(),
+		`SELECT count(*) FROM bookings WHERE ride_id = $1 AND status IN ('pending', 'confirmed')`, id,
+	).Scan(&activeBookings)
+
+	rideSummary := map[string]any{
+		"id":                      rideID,
+		"status":                  rideStatus,
+		"departure_at":            departureAt.Format(time.RFC3339),
+		"available_seats":         availableSeats,
+		"total_seats":             totalSeats,
+		"minutes_until_departure": int(minutesUntil),
+		"can_cancel":              rideStatus == "scheduled" && (activeBookings == 0 || minutesUntil > 60),
+		"can_start":               rideStatus == "scheduled" && minutesUntil <= 30 && minutesUntil > -10,
+		"cancellation_deadline":   cancellationDeadline,
+	}
+
+	// Fetch user's booking on this ride (if any)
+	var bookingID, bookingStatus string
+	var seats int
+	err = h.db.QueryRow(r.Context(),
+		`SELECT id, status, seats FROM bookings
+		 WHERE ride_id = $1 AND rider_id = $2
+		 ORDER BY created_at DESC LIMIT 1`, id, claims.UserID,
+	).Scan(&bookingID, &bookingStatus, &seats)
+
+	var userBooking any
+	if err == nil {
+		userBooking = map[string]any{
+			"id":             bookingID,
+			"status":         bookingStatus,
+			"seats":          seats,
+			"can_cancel":     (bookingStatus == "pending" && rideStatus == "scheduled") || (bookingStatus == "confirmed" && rideStatus == "scheduled" && minutesUntil > 60),
+			"can_mark_ready": bookingStatus == "confirmed" && minutesUntil <= 15,
+		}
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]any{
+		"ride":         rideSummary,
+		"user_booking": userBooking,
+	})
 }
