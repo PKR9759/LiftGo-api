@@ -230,8 +230,8 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Guard: ride must be scheduled
-	if rideStatus != "scheduled" {
+	// Guard: ride must be scheduled or full
+	if rideStatus != "scheduled" && rideStatus != "full" {
 		utils.WriteError(w, http.StatusBadRequest, "Cannot cancel a ride that has already started.")
 		return
 	}
@@ -295,8 +295,8 @@ func (h *Handler) GetStatusSummary(w http.ResponseWriter, r *http.Request) {
 		"available_seats":         availableSeats,
 		"total_seats":             totalSeats,
 		"minutes_until_departure": int(minutesUntil),
-		"can_cancel":              rideStatus == "scheduled" && (activeBookings == 0 || minutesUntil > 60),
-		"can_start":               rideStatus == "scheduled" && minutesUntil <= 30 && minutesUntil > -10,
+		"can_cancel":              (rideStatus == "scheduled" || rideStatus == "full") && (activeBookings == 0 || minutesUntil > 60),
+		"can_start":               (rideStatus == "scheduled" || rideStatus == "full") && minutesUntil <= 30 && minutesUntil > -10,
 		"cancellation_deadline":   cancellationDeadline,
 	}
 

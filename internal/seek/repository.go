@@ -121,7 +121,7 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Seek, e
 		        s.status, s.expires_at, s.created_at
 		 FROM seeks s
 		 JOIN users u ON u.id = s.seeker_id
-		 WHERE s.status = 'active'
+		 WHERE s.status IN ('active', 'matched')
 		   AND s.expires_at > now()
 		   AND ($6 = '' OR s.seeker_id::text != $6)
 		   AND ST_DWithin(
