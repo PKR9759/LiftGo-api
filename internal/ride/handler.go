@@ -42,12 +42,18 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[RideHandler] FindNearby: origin=(%f,%f), dest=(%f,%f), radius=%f", originLat, originLng, destLat, destLng, radius)
 
+	var excludeUserID string
+	if claims := auth.GetUserFromContext(r); claims != nil {
+		excludeUserID = claims.UserID
+	}
+
 	rides, err := h.service.FindNearby(r.Context(), NearbyParams{
-		OriginLat:    originLat,
-		OriginLng:    originLng,
-		DestLat:      destLat,
-		DestLng:      destLng,
-		RadiusMeters: radius,
+		OriginLat:     originLat,
+		OriginLng:     originLng,
+		DestLat:       destLat,
+		DestLng:       destLng,
+		RadiusMeters:  radius,
+		ExcludeUserID: excludeUserID,
 	})
 	if err != nil {
 		log.Printf("[RideHandler] FindNearby error: %v", err)

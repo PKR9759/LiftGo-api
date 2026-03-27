@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/PKR9759/LiftGo-api/internal/auth"
 	"github.com/PKR9759/LiftGo-api/internal/utils"
+	"github.com/go-chi/chi/v5"
 )
 
 type Handler struct {
@@ -23,16 +23,22 @@ func NewHandler(service *Service) *Handler {
 func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 	originLat, _ := strconv.ParseFloat(r.URL.Query().Get("origin_lat"), 64)
 	originLng, _ := strconv.ParseFloat(r.URL.Query().Get("origin_lng"), 64)
-	destLat, _   := strconv.ParseFloat(r.URL.Query().Get("dest_lat"),   64)
-	destLng, _   := strconv.ParseFloat(r.URL.Query().Get("dest_lng"),   64)
-	radius, _    := strconv.ParseFloat(r.URL.Query().Get("radius"),     64)
+	destLat, _ := strconv.ParseFloat(r.URL.Query().Get("dest_lat"), 64)
+	destLng, _ := strconv.ParseFloat(r.URL.Query().Get("dest_lng"), 64)
+	radius, _ := strconv.ParseFloat(r.URL.Query().Get("radius"), 64)
+
+	var excludeUserID string
+	if claims := auth.GetUserFromContext(r); claims != nil {
+		excludeUserID = claims.UserID
+	}
 
 	seeks, err := h.service.FindNearby(r.Context(), NearbyParams{
-		OriginLat:    originLat,
-		OriginLng:    originLng,
-		DestLat:      destLat,
-		DestLng:      destLng,
-		RadiusMeters: radius,
+		OriginLat:     originLat,
+		OriginLng:     originLng,
+		DestLat:       destLat,
+		DestLng:       destLng,
+		RadiusMeters:  radius,
+		ExcludeUserID: excludeUserID,
 	})
 	if err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())

@@ -128,6 +128,7 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Ride, e
 		 WHERE r.status IN ('scheduled', 'active')
 		   AND r.available_seats > 0
 		   AND r.departure_at > (now() - interval '1 hour')
+		   AND ($6 = '' OR r.driver_id::text != $6)
 		   AND ST_DWithin(
 		         r.route::geography,
 		         ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
@@ -142,6 +143,7 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Ride, e
 		p.OriginLat, p.OriginLng,
 		p.DestLat, p.DestLng,
 		radius,
+		p.ExcludeUserID,
 	)
 	if err != nil {
 		log.Printf("[RideRepo] FindNearby error: %v", err)

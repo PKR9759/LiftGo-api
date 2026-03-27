@@ -36,9 +36,10 @@ type CreateRequest struct {
 }
 
 type NearbyParams struct {
-	OriginLat    float64
-	OriginLng    float64
-	DestLat      float64
-	DestLng      float64
-	RadiusMeters float64
+	OriginLat     float64
+	OriginLng     float64
+	DestLat       float64
+	DestLng       float64
+	RadiusMeters  float64
+	ExcludeUserID string
 }

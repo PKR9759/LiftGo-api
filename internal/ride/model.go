@@ -51,11 +51,12 @@ type UpdateRequest struct {
 }
 
 type NearbyParams struct {
-	OriginLat   float64 `json:"origin_lat"`
-	OriginLng   float64 `json:"origin_lng"`
-	DestLat     float64 `json:"dest_lat"`
-	DestLng     float64 `json:"dest_lng"`
-	RadiusMeters float64 `json:"radius_meters"`
+	OriginLat     float64 `json:"origin_lat"`
+	OriginLng     float64 `json:"origin_lng"`
+	DestLat       float64 `json:"dest_lat"`
+	DestLng       float64 `json:"dest_lng"`
+	RadiusMeters  float64 `json:"radius_meters"`
+	ExcludeUserID string  `json:"exclude_user_id"`
 }
 
 type UpdateStatusRequest struct {

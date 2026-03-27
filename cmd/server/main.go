@@ -104,7 +104,7 @@ func main() {
 	})
 
 	// ── rides ─────────────────────────────────────────────────
-	r.Get("/api/rides/nearby", rideHandler.FindNearby)
+	r.With(auth.PopulateUser).Get("/api/rides/nearby", rideHandler.FindNearby)
 	r.Route("/api/rides", func(r chi.Router) {
 		r.Use(auth.RequireAuth)
 		r.Post("/", rideHandler.Create)
@@ -120,7 +120,7 @@ func main() {
 	})
 
 	// ── seeks ─────────────────────────────────────────────────
-	r.Get("/api/seeks/nearby", seekHandler.FindNearby)
+	r.With(auth.PopulateUser).Get("/api/seeks/nearby", seekHandler.FindNearby)
 	r.Route("/api/seeks", func(r chi.Router) {
 		r.Use(auth.RequireAuth)
 		r.Post("/", seekHandler.Create)

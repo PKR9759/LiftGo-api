@@ -123,6 +123,7 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Seek, e
 		 JOIN users u ON u.id = s.seeker_id
 		 WHERE s.status = 'active'
 		   AND s.expires_at > now()
+		   AND ($6 = '' OR s.seeker_id::text != $6)
 		   AND ST_DWithin(
 		         s.route::geography,
 		         ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
@@ -137,6 +138,7 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Seek, e
 		p.OriginLat, p.OriginLng,
 		p.DestLat, p.DestLng,
 		radius,
+		p.ExcludeUserID,
 	)
 	if err != nil {
 		return nil, err

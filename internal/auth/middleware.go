@@ -40,6 +40,28 @@ func RequireAuth(next http.Handler) http.Handler {
 	})
 }
 
+func PopulateUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := r.Header.Get("Authorization")
+		if header == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		parts := strings.SplitN(header, " ", 2)
+		if len(parts) == 2 && parts[0] == "Bearer" {
+			claims, err := ValidateToken(parts[1])
+			if err == nil {
+				ctx := context.WithValue(r.Context(), UserContextKey, claims)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func GetUserFromContext(r *http.Request) *Claims {
 	claims, _ := r.Context().Value(UserContextKey).(*Claims)
 	return claims
