@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 
 	customMiddleware "github.com/PKR9759/LiftGo-api/internal/middleware"
 	"github.com/PKR9759/LiftGo-api/internal/utils"
@@ -37,6 +38,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("user registered successfully", "user_id", resp.User.ID, "email", resp.User.Email, "request_id", reqID)
+	setAuthCookies(w, resp.AccessToken, resp.RefreshToken)
 	utils.WriteJSON(w, http.StatusCreated, resp)
 }
 
@@ -59,5 +61,103 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("user logged in successfully", "user_id", resp.User.ID, "email", resp.User.Email, "request_id", reqID)
+	setAuthCookies(w, resp.AccessToken, resp.RefreshToken)
 	utils.WriteJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
+	reqID, _ := r.Context().Value(customMiddleware.RequestIDKey).(string)
+	slog.Info("Handler.Refresh entry", "request_id", reqID)
+
+	cookie, err := r.Cookie("refresh_token")
+	if err != nil {
+		slog.Warn("refresh token cookie missing", "error", err, "request_id", reqID)
+		clearAuthCookies(w)
+		utils.WriteError(w, http.StatusUnauthorized, "missing refresh token")
+		return
+	}
+
+	rawRefresh := cookie.Value
+	resp, err := h.service.RefreshSession(r.Context(), rawRefresh, reqID)
+	if err != nil {
+		slog.Warn("refresh failed", "error", err, "request_id", reqID)
+		clearAuthCookies(w)
+		utils.WriteError(w, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+
+	setAuthCookies(w, resp.AccessToken, resp.RefreshToken)
+	slog.Info("session refreshed successfully", "user_id", resp.User.ID, "request_id", reqID)
+	utils.WriteJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	reqID, _ := r.Context().Value(customMiddleware.RequestIDKey).(string)
+	slog.Info("Handler.Logout entry", "request_id", reqID)
+
+	cookie, err := r.Cookie("refresh_token")
+	if err == nil {
+		h.service.Logout(r.Context(), cookie.Value)
+	}
+
+	clearAuthCookies(w)
+	slog.Info("user logged out", "request_id", reqID)
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
+}
+
+func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
+	claims := GetUserFromContext(r)
+	if claims == nil {
+		utils.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]any{
+		"user": map[string]string{
+			"id":    claims.UserID,
+			"email": claims.Email,
+			"role":  claims.Role,
+		},
+	})
+}
+
+func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string) {
+	secure := os.Getenv("COOKIE_SECURE") == "true"
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "access_token",
+		Value:    accessToken,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+		Path:     "/",
+		MaxAge:   900, // 15 min
+	})
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh_token",
+		Value:    refreshToken,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+		Path:     "/api/auth/refresh",
+		MaxAge:   604800, // 7 days
+	})
+}
+
+func clearAuthCookies(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "access_token",
+		Value:    "",
+		HttpOnly: true,
+		Path:     "/",
+		MaxAge:   -1,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh_token",
+		Value:    "",
+		HttpOnly: true,
+		Path:     "/api/auth/refresh",
+		MaxAge:   -1,
+	})
 }

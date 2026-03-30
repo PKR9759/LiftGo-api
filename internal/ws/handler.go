@@ -27,10 +27,11 @@ func NewHandler(hub *Hub, db *pgxpool.Pool, jwtSecret []byte) *Handler {
 }
 
 func (h *Handler) getUserID(r *http.Request) (string, error) {
-	tokenStr := r.URL.Query().Get("token")
-	if tokenStr == "" {
-		return "", errors.New("missing token query parameter")
+	cookie, err := r.Cookie("access_token")
+	if err != nil {
+		return "", errors.New("missing access_token cookie")
 	}
+	tokenStr := cookie.Value
 
 	token, err := jwt.ParseWithClaims(tokenStr, &auth.Claims{}, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {

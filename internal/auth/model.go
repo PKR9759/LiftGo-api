@@ -1,6 +1,8 @@
 // internal/auth/model.go
 package auth
 
+import "github.com/golang-jwt/jwt/v5"
+
 type RegisterRequest struct {
 	Name     string `json:"name"`
 	Email    string `json:"email"`
@@ -15,8 +17,9 @@ type LoginRequest struct {
 }
 
 type AuthResponse struct {
-	Token string     `json:"token"`
-	User  UserPublic `json:"user"`
+	User         UserPublic `json:"user"`
+	AccessToken  string     `json:"-"`
+	RefreshToken string     `json:"-"`
 }
 
 type UserPublic struct {
@@ -24,4 +27,11 @@ type UserPublic struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`
 	Role  string `json:"role"`
+}
+
+type Claims struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	Role   string `json:"role"`
+	jwt.RegisteredClaims
 }

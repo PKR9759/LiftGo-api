@@ -5,7 +5,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/PKR9759/LiftGo-api/internal/utils"
 )
@@ -16,20 +15,14 @@ const UserContextKey contextKey = "user"
 
 func RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		if header == "" {
-			slog.Warn("missing authorization header", "headers", r.Header)
-			utils.WriteError(w, http.StatusUnauthorized, "missing authorization header")
+		cookie, err := r.Cookie("access_token")
+		if err != nil {
+			slog.Warn("missing access_token cookie")
+			utils.WriteError(w, http.StatusUnauthorized, "missing access token")
 			return
 		}
 
-		parts := strings.SplitN(header, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			utils.WriteError(w, http.StatusUnauthorized, "invalid authorization format")
-			return
-		}
-
-		claims, err := ValidateToken(parts[1])
+		claims, err := ValidateToken(cookie.Value)
 		if err != nil {
 			utils.WriteError(w, http.StatusUnauthorized, "invalid or expired token")
 			return
@@ -42,15 +35,9 @@ func RequireAuth(next http.Handler) http.Handler {
 
 func PopulateUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		if header == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		parts := strings.SplitN(header, " ", 2)
-		if len(parts) == 2 && parts[0] == "Bearer" {
-			claims, err := ValidateToken(parts[1])
+		cookie, err := r.Cookie("access_token")
+		if err == nil {
+			claims, err := ValidateToken(cookie.Value)
 			if err == nil {
 				ctx := context.WithValue(r.Context(), UserContextKey, claims)
 				next.ServeHTTP(w, r.WithContext(ctx))
