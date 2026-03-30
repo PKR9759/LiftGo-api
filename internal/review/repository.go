@@ -4,6 +4,7 @@ package review
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -19,6 +20,7 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 func (r *Repository) Create(ctx context.Context, reviewerID string, req CreateRequest) (*Review, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
+		slog.Error("failed to start review creation tx", "error", err)
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
@@ -34,9 +36,11 @@ func (r *Repository) Create(ctx context.Context, reviewerID string, req CreateRe
 		)`, req.BookingID, reviewerID,
 	).Scan(&validBooking)
 	if err != nil {
+		slog.Error("review booking validation query failed", "error", err)
 		return nil, err
 	}
 	if !validBooking {
+		slog.Warn("booking not eligible for review or not found", "booking_id", req.BookingID, "reviewer_id", reviewerID)
 		return nil, fmt.Errorf("booking not found or not eligible for review")
 	}
 
@@ -53,6 +57,7 @@ func (r *Repository) Create(ctx context.Context, reviewerID string, req CreateRe
 		&review.Rating, &review.Comment, &review.CreatedAt,
 	)
 	if err != nil {
+		slog.Error("failed to insert review", "error", err, "booking_id", req.BookingID)
 		return nil, fmt.Errorf("review already submitted or invalid booking")
 	}
 
@@ -67,10 +72,12 @@ func (r *Repository) Create(ctx context.Context, reviewerID string, req CreateRe
 		 WHERE id = $1`, req.RevieweeID,
 	)
 	if err != nil {
+		slog.Error("failed to update user avg rating", "error", err, "reviewee_id", req.RevieweeID)
 		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		slog.Error("failed to commit review tx", "error", err)
 		return nil, err
 	}
 
@@ -78,9 +85,11 @@ func (r *Repository) Create(ctx context.Context, reviewerID string, req CreateRe
 		`SELECT name FROM users WHERE id = $1`, reviewerID,
 	).Scan(&review.ReviewerName)
 	if err != nil {
+		slog.Error("failed to fetch reviewer name", "error", err, "reviewer_id", reviewerID)
 		return nil, err
 	}
 
+	slog.Info("review successfully saved into db", "review_id", review.ID, "booking_id", req.BookingID)
 	return &review, nil
 }
 
@@ -94,6 +103,7 @@ func (r *Repository) GetByReviewee(ctx context.Context, revieweeID string) ([]*R
 		 ORDER BY rv.created_at DESC`, revieweeID,
 	)
 	if err != nil {
+		slog.Error("GetByReviewee db query failed", "error", err, "reviewee_id", revieweeID)
 		return nil, err
 	}
 	defer rows.Close()
@@ -105,6 +115,7 @@ func (r *Repository) GetByReviewee(ctx context.Context, revieweeID string) ([]*R
 			&rv.ID, &rv.BookingID, &rv.ReviewerID, &rv.ReviewerName,
 			&rv.RevieweeID, &rv.Rating, &rv.Comment, &rv.CreatedAt,
 		); err != nil {
+			slog.Error("GetByReviewee row scan failed", "error", err)
 			return nil, err
 		}
 		reviews = append(reviews, rv)

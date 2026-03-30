@@ -4,6 +4,7 @@ package booking
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -19,6 +20,7 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 func (r *Repository) Create(ctx context.Context, riderID string, req CreateRequest) (*Booking, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
+		slog.Error("failed to start create booking tx", "error", err)
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
@@ -35,6 +37,7 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		req.RideID, req.Seats,
 	).Scan(&rideID, &pricePerSeat)
 	if err != nil {
+		slog.Warn("failed to book seats or unavailable", "ride_id", req.RideID, "requested_seats", req.Seats)
 		return nil, fmt.Errorf("not enough seats or ride is unavailable")
 	}
 
@@ -55,6 +58,7 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		req.RideID, riderID, seekID, req.Seats, totalPrice,
 	).Scan(&bookingID, &status)
 	if err != nil {
+		slog.Error("insert booking query failed", "error", err)
 		return nil, err
 	}
 
@@ -65,14 +69,17 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 			 WHERE id = $1`, seekID,
 		)
 		if err != nil {
+			slog.Error("failed to update seek status", "error", err, "seek_id", *seekID)
 			return nil, err
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		slog.Error("commit create booking failed", "error", err)
 		return nil, err
 	}
 
+	slog.Info("booking recorded in db", "booking_id", bookingID, "ride_id", rideID, "rider_id", riderID)
 	return r.GetByID(ctx, bookingID)
 }
 
@@ -99,6 +106,7 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Booking, error) {
 		&b.RiderReadyLat, &b.RiderReadyLng,
 	)
 	if err != nil {
+		slog.Error("GetByID booking failed", "error", err, "booking_id", id)
 		return nil, err
 	}
 	return b, nil
@@ -120,6 +128,7 @@ func (r *Repository) GetByRider(ctx context.Context, riderID string) ([]*Booking
 		 ORDER BY b.created_at DESC`, riderID,
 	)
 	if err != nil {
+		slog.Error("GetByRider bookings db error", "error", err, "rider_id", riderID)
 		return nil, err
 	}
 	defer rows.Close()
@@ -142,6 +151,7 @@ func (r *Repository) GetIncoming(ctx context.Context, driverID string) ([]*Booki
 		 ORDER BY b.created_at DESC`, driverID,
 	)
 	if err != nil {
+		slog.Error("GetIncoming bookings db error", "error", err, "driver_id", driverID)
 		return nil, err
 	}
 	defer rows.Close()
@@ -170,9 +180,11 @@ func (r *Repository) UpdateStatus(ctx context.Context, id, actorID, newStatus, r
 	var returnedID string
 	err := r.db.QueryRow(ctx, query, newStatus, id, actorID).Scan(&returnedID)
 	if err != nil {
+		slog.Error("UpdateStatus booking query failed", "error", err, "booking_id", id)
 		return nil, fmt.Errorf("booking not found or not authorised")
 	}
 
+	slog.Info("booking status updated in db", "booking_id", returnedID, "new_status", newStatus)
 	return r.GetByID(ctx, returnedID)
 }
 
@@ -180,6 +192,7 @@ func (r *Repository) UpdateStatus(ctx context.Context, id, actorID, newStatus, r
 func (r *Repository) ConfirmBooking(ctx context.Context, id, driverID string) (*Booking, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
+		slog.Error("failed to start confirm booking tx", "error", err)
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
@@ -200,6 +213,7 @@ func (r *Repository) ConfirmBooking(ctx context.Context, id, driverID string) (*
 		id, driverID,
 	).Scan(&returnedID, &seats, &rideID)
 	if err != nil {
+		slog.Error("booking confirm verification failed", "error", err, "booking_id", id, "driver_id", driverID)
 		return nil, fmt.Errorf("booking not found, not pending, or not authorised")
 	}
 
@@ -215,6 +229,7 @@ func (r *Repository) ConfirmBooking(ctx context.Context, id, driverID string) (*
 		seats, rideID,
 	).Scan(&updatedRideID)
 	if err != nil {
+		slog.Error("ride seat decrement failed", "error", err, "ride_id", rideID, "deduct_seats", seats)
 		return nil, fmt.Errorf("not enough seats to confirm this booking")
 	}
 
@@ -224,13 +239,16 @@ func (r *Repository) ConfirmBooking(ctx context.Context, id, driverID string) (*
 		 WHERE id = $1 AND available_seats = 0`, rideID,
 	)
 	if err != nil {
+		slog.Error("mark ride full failed", "error", err)
 		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		slog.Error("commit confirm booking failed", "error", err)
 		return nil, err
 	}
 
+	slog.Info("booking confirmed successfully in db", "booking_id", returnedID, "ride_id", updatedRideID)
 	return r.GetByID(ctx, returnedID)
 }
 
@@ -242,6 +260,7 @@ func (r *Repository) CancelBooking(ctx context.Context, id, actorID, role string
 		`SELECT status FROM bookings WHERE id = $1`, id,
 	).Scan(&currentStatus)
 	if err != nil {
+		slog.Error("cancel booking - not found", "error", err, "booking_id", id)
 		return nil, fmt.Errorf("booking not found")
 	}
 
@@ -267,6 +286,7 @@ func (r *Repository) CancelBooking(ctx context.Context, id, actorID, role string
 	var returnedID string
 	err = r.db.QueryRow(ctx, query, id, actorID).Scan(&returnedID)
 	if err != nil {
+		slog.Error("cancel booking update failed", "error", err, "booking_id", id)
 		return nil, fmt.Errorf("booking not found or not authorised")
 	}
 
@@ -285,10 +305,12 @@ func (r *Repository) CancelBooking(ctx context.Context, id, actorID, role string
 			 WHERE b.id = $1 AND r.id = b.ride_id`, id,
 		)
 		if err != nil {
+			slog.Error("restore seats failed during cancel", "error", err, "booking_id", id)
 			return nil, err
 		}
 	}
 
+	slog.Info("booking cancelled in db", "booking_id", returnedID)
 	return r.GetByID(ctx, returnedID)
 }
 
@@ -316,6 +338,7 @@ func (r *Repository) GetRideBookingsWithRiderInfo(ctx context.Context, rideID, d
 		rideID, driverID,
 	)
 	if err != nil {
+		slog.Error("GetRideBookings query failed", "error", err, "ride_id", rideID)
 		return nil, err
 	}
 	defer rows.Close()
@@ -336,6 +359,7 @@ func (r *Repository) GetRideBookingsWithRiderInfo(ctx context.Context, rideID, d
 			&bi.RiderReadyLat, &bi.RiderReadyLng,
 		)
 		if err != nil {
+			slog.Error("scan error GetRideBookings", "error", err)
 			return nil, err
 		}
 		list = append(list, &bi)
@@ -361,6 +385,7 @@ func (r *Repository) CheckDriverLocation(ctx context.Context, bookingID string, 
 		driverLng, driverLat, bookingID,
 	).Scan(&isWithin)
 	if err != nil {
+		slog.Error("CheckDriverLocation query failed", "error", err, "booking_id", bookingID)
 		return false, err
 	}
 	return isWithin, nil
@@ -376,8 +401,10 @@ func (r *Repository) MarkRiderReady(ctx context.Context, id, riderID string, lat
 		lat, lng, id, riderID,
 	).Scan(&returnedID)
 	if err != nil {
+		slog.Error("MarkRiderReady failed", "error", err, "booking_id", id)
 		return nil, fmt.Errorf("booking not found or not authorised")
 	}
+	slog.Info("booking marked rider_ready in db", "booking_id", returnedID)
 	return r.GetByID(ctx, returnedID)
 }
 
@@ -392,8 +419,10 @@ func (r *Repository) MarkPickedUp(ctx context.Context, id, driverID string) (*Bo
 		id, driverID,
 	).Scan(&returnedID)
 	if err != nil {
+		slog.Error("MarkPickedUp failed", "error", err, "booking_id", id)
 		return nil, fmt.Errorf("booking not found or not authorised")
 	}
+	slog.Info("booking marked picked_up in db", "booking_id", returnedID)
 	return r.GetByID(ctx, returnedID)
 }
 
@@ -408,8 +437,10 @@ func (r *Repository) MarkDropped(ctx context.Context, id, driverID string) (*Boo
 		id, driverID,
 	).Scan(&returnedID)
 	if err != nil {
+		slog.Error("MarkDropped failed", "error", err, "booking_id", id)
 		return nil, fmt.Errorf("booking not found or not authorised")
 	}
+	slog.Info("booking marked completed in db", "booking_id", returnedID)
 	return r.GetByID(ctx, returnedID)
 }
 
@@ -424,14 +455,17 @@ func (r *Repository) MarkNoShow(ctx context.Context, id, driverID string) (*Book
 		id, driverID,
 	).Scan(&returnedID)
 	if err != nil {
+		slog.Error("MarkNoShow failed", "error", err, "booking_id", id)
 		return nil, fmt.Errorf("booking not found or not authorised")
 	}
+	slog.Info("booking marked no_show in db", "booking_id", returnedID)
 	return r.GetByID(ctx, returnedID)
 }
 
 func (r *Repository) CheckAndUpdateRideCompletion(ctx context.Context, rideID string) (bool, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
+		slog.Error("CheckAndUpdateRideCompletion tx start failed", "error", err)
 		return false, err
 	}
 	defer tx.Rollback(ctx)
@@ -443,6 +477,7 @@ func (r *Repository) CheckAndUpdateRideCompletion(ctx context.Context, rideID st
 		rideID,
 	).Scan(&pendingCount)
 	if err != nil {
+		slog.Error("pending bookings count query failed", "error", err, "ride_id", rideID)
 		return false, err
 	}
 
@@ -453,13 +488,16 @@ func (r *Repository) CheckAndUpdateRideCompletion(ctx context.Context, rideID st
 		if err == nil && activeStatus == "active" {
 			_, err = tx.Exec(ctx, `UPDATE rides SET status = 'completed', updated_at = now() WHERE id = $1`, rideID)
 			if err != nil {
+				slog.Error("update ride to completed failed", "error", err, "ride_id", rideID)
 				return false, err
 			}
 			completedRide = true
+			slog.Info("ride automatically completed as all bookings resolved", "ride_id", rideID)
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		slog.Error("commit generic tx failed CheckAndUpdateRideCompletion", "error", err)
 		return false, err
 	}
 	return completedRide, nil
@@ -481,6 +519,7 @@ func scanBookings(rows interface {
 			&b.RiderReadyLat, &b.RiderReadyLng,
 		)
 		if err != nil {
+			slog.Error("scanBookings failed", "error", err)
 			return nil, err
 		}
 		bookings = append(bookings, b)

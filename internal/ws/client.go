@@ -1,8 +1,9 @@
+// internal/ws/client.go
 package ws
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -10,48 +11,33 @@ import (
 )
 
 const (
-	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
-
-	// Time allowed to read the next pong message from the peer.
-	pongWait = 60 * time.Second
-
-	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = 54 * time.Second
-
-	// Maximum message size allowed from peer.
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = 54 * time.Second
 	maxMessageSize = 512
 )
 
-// Upgrader configures the WebSocket connection constraints
 var Upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		// CORS is handled at the HTTP router middleware layer
 		return true
 	},
 }
 
-// Client acts as the middleman between the websocket connection and the hub.
 type Client struct {
-	hub *Hub
-
-	// The websocket connection.
+	hub  *Hub
 	conn *websocket.Conn
-
-	// Buffered channel of outbound messages.
 	send chan []byte
 
-	// Connection context
 	bookingID string
 	role      string
-	userID    string // Set as string (UUID) per the application's actual data model, despite prompt typo
+	userID    string
 }
 
-// ReadPump pumps messages from the websocket connection to the hub.
 func (c *Client) ReadPump() {
 	defer func() {
+		slog.Info("websocket client disconnected (read pump)", "booking_id", c.bookingID, "user_id", c.userID, "role", c.role)
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
@@ -67,16 +53,19 @@ func (c *Client) ReadPump() {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("error: %v", err)
+				slog.Error("websocket read error", "error", err, "booking_id", c.bookingID, "user_id", c.userID)
 			}
 			break
 		}
+
+		slog.Debug("raw message parsed", "booking_id", c.bookingID, "user_id", c.userID, "message", string(message))
 
 		var baseMsg struct {
 			Type string `json:"type"`
 		}
 		if err := json.Unmarshal(message, &baseMsg); err != nil {
-			continue // Ignore malformed messages
+			slog.Warn("malformed websocket message", "error", err, "booking_id", c.bookingID, "user_id", c.userID)
+			continue
 		}
 
 		if baseMsg.Type == "message" {
@@ -86,10 +75,9 @@ func (c *Client) ReadPump() {
 				From string `json:"from"`
 			}
 			if err := json.Unmarshal(message, &chatMsg); err == nil {
-				chatMsg.From = c.role // force the 'from' field to be the client's actual role
+				chatMsg.From = c.role
 				msgBytes, _ := json.Marshal(chatMsg)
 
-				// Broadcast to all clients in this booking room
 				c.hub.broadcastToRoom <- RoomMessage{
 					BookingID: c.bookingID,
 					Data:      msgBytes,
@@ -101,7 +89,6 @@ func (c *Client) ReadPump() {
 				Lng float64 `json:"lng"`
 			}
 			if err := json.Unmarshal(message, &loc); err == nil {
-				// Construct LocationMessage and push to hub broadcast
 				msg := LocationMessage{
 					BookingID: c.bookingID,
 					Lat:       loc.Lat,
@@ -114,7 +101,6 @@ func (c *Client) ReadPump() {
 	}
 }
 
-// WritePump pumps messages from the hub to the websocket connection.
 func (c *Client) WritePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
@@ -127,13 +113,12 @@ func (c *Client) WritePump() {
 		case message, ok := <-c.send:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
-				// The hub closed the channel
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 
-			// Write each message as its own frame — no batching
 			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				slog.Error("websocket write error", "error", err, "booking_id", c.bookingID, "user_id", c.userID)
 				return
 			}
 

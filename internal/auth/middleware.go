@@ -3,7 +3,7 @@ package auth
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -18,7 +18,7 @@ func RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := r.Header.Get("Authorization")
 		if header == "" {
-			log.Printf("[Auth] Missing Authorization header. Incoming headers: %v", r.Header)
+			slog.Warn("missing authorization header", "headers", r.Header)
 			utils.WriteError(w, http.StatusUnauthorized, "missing authorization header")
 			return
 		}

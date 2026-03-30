@@ -4,6 +4,7 @@ package seek
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -56,8 +57,10 @@ func (r *Repository) Create(ctx context.Context, seekerID string, req CreateRequ
 		&seek.Status, &seek.ExpiresAt, &seek.CreatedAt,
 	)
 	if err != nil {
+		slog.Error("Create seek db failed", "error", err, "seeker_id", seekerID)
 		return nil, err
 	}
+	slog.Info("seek record created in db", "seek_id", seek.ID, "seeker_id", seekerID)
 	return seek, nil
 }
 
@@ -81,6 +84,7 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Seek, error) {
 		&seek.Status, &seek.ExpiresAt, &seek.CreatedAt,
 	)
 	if err != nil {
+		slog.Error("GetByID seek db failed", "error", err, "seek_id", id)
 		return nil, err
 	}
 	return seek, nil
@@ -99,6 +103,7 @@ func (r *Repository) GetBySeeker(ctx context.Context, seekerID string) ([]*Seek,
 		 ORDER BY s.created_at DESC`, seekerID,
 	)
 	if err != nil {
+		slog.Error("GetBySeeker db query failed", "error", err, "seeker_id", seekerID)
 		return nil, err
 	}
 	defer rows.Close()
@@ -141,6 +146,7 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Seek, e
 		p.ExcludeUserID,
 	)
 	if err != nil {
+		slog.Error("FindNearby seeks query failed", "error", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -154,11 +160,13 @@ func (r *Repository) Cancel(ctx context.Context, id, seekerID string) error {
 		id, seekerID,
 	)
 	if err != nil {
+		slog.Error("Cancel seek db error", "error", err, "seek_id", id, "seeker_id", seekerID)
 		return err
 	}
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("seek not found or already cancelled")
 	}
+	slog.Info("seek updated to cancelled in db", "seek_id", id, "seeker_id", seekerID)
 	return nil
 }
 
@@ -169,6 +177,9 @@ func (r *Repository) ExpireStale(ctx context.Context) error {
 		`UPDATE seeks SET status = 'expired'
 		 WHERE status = 'active' AND expires_at < now()`,
 	)
+	if err != nil {
+		slog.Error("ExpireStale seeks db error", "error", err)
+	}
 	return err
 }
 
@@ -188,6 +199,7 @@ func scanSeeks(rows interface {
 			&s.Status, &s.ExpiresAt, &s.CreatedAt,
 		)
 		if err != nil {
+			slog.Error("scanSeeks error", "error", err)
 			return nil, err
 		}
 		seeks = append(seeks, s)

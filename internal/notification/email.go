@@ -2,7 +2,7 @@ package notification
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -27,7 +27,6 @@ func NewEmailClient() *EmailClient {
 }
 
 func (c *EmailClient) getRecipient(actualEmail string) string {
-	// In test mode, override all recipients to your verified email
 	if testEmail := os.Getenv("RESEND_TEST_RECIPIENT"); testEmail != "" {
 		return testEmail
 	}
@@ -55,7 +54,9 @@ func (c *EmailClient) SendNewBookingRequestToDriver(driverEmail, driverName, rid
 
 		_, err := c.resendClient.Emails.Send(params)
 		if err != nil {
-			log.Printf("Failed to send new booking request email to %s: %v", driverEmail, err)
+			slog.Error("Failed to send new booking request email", "error", err, "driver_email", driverEmail)
+		} else {
+			slog.Info("Sent new booking request email", "driver_email", driverEmail)
 		}
 	}()
 }
@@ -81,7 +82,9 @@ func (c *EmailClient) SendBookingConfirmedToRider(riderEmail, riderName, driverN
 
 		_, err := c.resendClient.Emails.Send(params)
 		if err != nil {
-			log.Printf("Failed to send booking confirmed email to %s: %v", riderEmail, err)
+			slog.Error("Failed to send booking confirmed email", "error", err, "rider_email", riderEmail)
+		} else {
+			slog.Info("Sent booking confirmed email", "rider_email", riderEmail)
 		}
 	}()
 }
@@ -106,7 +109,9 @@ func (c *EmailClient) SendDriverStartedRideToRider(riderEmail, riderName, driver
 
 		_, err := c.resendClient.Emails.Send(params)
 		if err != nil {
-			log.Printf("Failed to send driver started ride email to %s: %v", riderEmail, err)
+			slog.Error("Failed to send driver started ride email", "error", err, "rider_email", riderEmail)
+		} else {
+			slog.Info("Sent driver started ride email", "rider_email", riderEmail)
 		}
 	}()
 }
@@ -131,7 +136,9 @@ func (c *EmailClient) SendRideCompletedToRider(riderEmail, riderName, driverName
 
 		_, err := c.resendClient.Emails.Send(params)
 		if err != nil {
-			log.Printf("Failed to send ride completed email to rider %s: %v", riderEmail, err)
+			slog.Error("Failed to send ride completed email to rider", "error", err, "rider_email", riderEmail)
+		} else {
+			slog.Info("Sent ride completed email to rider", "rider_email", riderEmail)
 		}
 	}()
 }
@@ -156,7 +163,9 @@ func (c *EmailClient) SendRideCompletedToDriver(driverEmail, driverName, riderNa
 
 		_, err := c.resendClient.Emails.Send(params)
 		if err != nil {
-			log.Printf("Failed to send ride completed email to driver %s: %v", driverEmail, err)
+			slog.Error("Failed to send ride completed email to driver", "error", err, "driver_email", driverEmail)
+		} else {
+			slog.Info("Sent ride completed email to driver", "driver_email", driverEmail)
 		}
 	}()
 }
@@ -181,7 +190,9 @@ func (c *EmailClient) SendBookingCancelled(recipientEmail, recipientName, cancel
 
 		_, err := c.resendClient.Emails.Send(params)
 		if err != nil {
-			log.Printf("Failed to send booking cancelled email to %s: %v", recipientEmail, err)
+			slog.Error("Failed to send booking cancelled email", "error", err, "recipient_email", recipientEmail)
+		} else {
+			slog.Info("Sent booking cancelled email", "recipient_email", recipientEmail)
 		}
 	}()
 }

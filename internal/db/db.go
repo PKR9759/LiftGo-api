@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -45,7 +46,7 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 		if _, err := pool.Exec(ctx, string(sql)); err != nil {
 			return fmt.Errorf("running %s: %w", f, err)
 		}
-		fmt.Printf("  migrated: %s\n", f)
+		slog.Info("migrated", "file", f)
 	}
 
 	return nil

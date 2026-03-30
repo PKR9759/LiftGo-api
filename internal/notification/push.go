@@ -3,7 +3,7 @@ package notification
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"os"
 
 	"github.com/SherClockHolmes/webpush-go"
@@ -34,21 +34,25 @@ func (c *PushClient) SaveSubscription(userID string, endpoint, p256dh, auth stri
 		 ON CONFLICT (user_id, endpoint) DO NOTHING`,
 		userID, endpoint, p256dh, auth,
 	)
+	if err != nil {
+		slog.Error("failed to save push subscription", "error", err, "user_id", userID)
+	}
 	return err
 }
 
 func (c *PushClient) SendToUser(userID string, title, body, url string) {
 	enabled := os.Getenv("NOTIFICATIONS_ENABLED")
 	if enabled != "true" {
-		log.Printf("Push: Notifications disabled (NOTIFICATIONS_ENABLED=%s). Skipping push to %s", enabled, userID)
+		slog.Info("Push: Notifications disabled (NOTIFICATIONS_ENABLED=false). Skipping push.", "user_id", userID)
 		return
 	}
-	log.Printf("Push: Sending notification to user %s: %s", userID, title)
+	slog.Info("Push: Dispatching push notification", "user_id", userID, "title", title)
+
 	go func() {
 		ctx := context.Background()
 		rows, err := c.db.Query(ctx, "SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1", userID)
 		if err != nil {
-			log.Printf("Failed to query push subscriptions for user %s: %v", userID, err)
+			slog.Error("Failed to query push subscriptions", "error", err, "user_id", userID)
 			return
 		}
 		defer rows.Close()
@@ -69,7 +73,8 @@ func (c *PushClient) SendToUser(userID string, title, body, url string) {
 		}
 
 		if len(subs) == 0 {
-			return // No subscriptions
+			slog.Debug("Push: user has no active subscriptions", "user_id", userID)
+			return
 		}
 
 		payloadBytes, _ := json.Marshal(map[string]string{
@@ -95,7 +100,7 @@ func (c *PushClient) SendToUser(userID string, title, body, url string) {
 			})
 
 			if err != nil {
-				log.Printf("Failed to send push to sub %d (user %s): %v", s.ID, userID, err)
+				slog.Error("Failed to send push notification", "error", err, "sub_id", s.ID, "user_id", userID)
 				continue
 			}
 			defer resp.Body.Close()
@@ -103,7 +108,9 @@ func (c *PushClient) SendToUser(userID string, title, body, url string) {
 			if resp.StatusCode == 410 {
 				_, delErr := c.db.Exec(ctx, "DELETE FROM push_subscriptions WHERE id = $1", s.ID)
 				if delErr != nil {
-					log.Printf("Failed to delete expired subscription %d: %v", s.ID, delErr)
+					slog.Error("Failed to delete expired subscription", "error", delErr, "sub_id", s.ID)
+				} else {
+					slog.Info("Deleted expired push subscription (410 Gone)", "sub_id", s.ID, "user_id", userID)
 				}
 			}
 		}

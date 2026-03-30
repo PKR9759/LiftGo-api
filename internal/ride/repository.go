@@ -4,7 +4,7 @@ package ride
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,7 +19,7 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 }
 
 func (r *Repository) Create(ctx context.Context, driverID string, req CreateRequest) (*Ride, error) {
-	log.Printf("[RideRepo] Creating ride for driver: %s, departing: %s", driverID, req.DepartureAt)
+	slog.Info("Creating ride for driver", "driver_id", driverID, "departing", req.DepartureAt)
 
 	departure, err := time.Parse(time.RFC3339, req.DepartureAt)
 	if err != nil {
@@ -71,10 +71,10 @@ func (r *Repository) Create(ctx context.Context, driverID string, req CreateRequ
 		&ride.Notes, &ride.Status, &ride.CreatedAt,
 	)
 	if err != nil {
-		log.Printf("[RideRepo] Failed to create ride: %v", err)
+		slog.Error("Failed to create ride", "error", err, "driver_id", driverID)
 		return nil, err
 	}
-	log.Printf("[RideRepo] Ride created successfully: %s (status: %s)", ride.ID, ride.Status)
+	slog.Info("Ride created successfully", "ride_id", ride.ID, "status", ride.Status)
 	return ride, nil
 }
 
@@ -114,7 +114,7 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Ride, e
 		radius = 1500 // default 1.5km
 	}
 
-	log.Printf("[RideRepo] Searching nearby: origin=(%f,%f), dest=(%f,%f), radius=%fm", p.OriginLat, p.OriginLng, p.DestLat, p.DestLng, radius)
+	slog.Debug("Searching nearby rides", "origin_lat", p.OriginLat, "origin_lng", p.OriginLng, "dest_lat", p.DestLat, "dest_lng", p.DestLng, "radius", radius)
 
 	rows, err := r.db.Query(ctx,
 		`SELECT r.id, r.driver_id, u.name, u.avg_rating, u.total_reviews,
@@ -145,7 +145,7 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Ride, e
 		p.ExcludeUserID,
 	)
 	if err != nil {
-		log.Printf("[RideRepo] FindNearby error: %v", err)
+		slog.Error("FindNearby error", "error", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -154,12 +154,12 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Ride, e
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[RideRepo] FindNearby found %d rides", len(rides))
+	slog.Info("FindNearby completed", "found_rides", len(rides))
 	return rides, nil
 }
 
 func (r *Repository) GetByDriver(ctx context.Context, driverID string) ([]*Ride, error) {
-	log.Printf("[RideRepo] Fetching rides for driver: %s", driverID)
+	slog.Info("Fetching rides for driver", "driver_id", driverID)
 	rows, err := r.db.Query(ctx,
 		`SELECT r.id, r.driver_id, u.name, u.avg_rating, u.total_reviews,
 		        r.origin_lat, r.origin_lng, r.origin_label,
@@ -173,7 +173,7 @@ func (r *Repository) GetByDriver(ctx context.Context, driverID string) ([]*Ride,
 		 ORDER BY r.departure_at DESC`, driverID,
 	)
 	if err != nil {
-		log.Printf("[RideRepo] GetByDriver error: %v", err)
+		slog.Error("GetByDriver error", "error", err, "driver_id", driverID)
 		return nil, err
 	}
 	defer rows.Close()
@@ -182,7 +182,7 @@ func (r *Repository) GetByDriver(ctx context.Context, driverID string) ([]*Ride,
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[RideRepo] GetByDriver found %d rides", len(rides))
+	slog.Info("GetByDriver found rides", "count", len(rides), "driver_id", driverID)
 	return rides, nil
 }
 
@@ -275,14 +275,14 @@ func scanRides(rows interface {
 			&r.Notes, &r.Status, &r.CreatedAt,
 		)
 		if err != nil {
-			log.Printf("[RideRepo] scanRides Scan error: %v", err)
+			slog.Error("scanRides Scan error", "error", err)
 			return nil, err
 		}
 		rides = append(rides, r)
 	}
 
 	if err := rows.Err(); err != nil {
-		log.Printf("[RideRepo] scanRides rows.Err: %v", err)
+		slog.Error("scanRides rows.Err", "error", err)
 		return nil, err
 	}
 

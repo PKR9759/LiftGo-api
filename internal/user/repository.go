@@ -3,6 +3,7 @@ package user
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -27,6 +28,7 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*User, error) {
 		&u.Role, &u.CreatedAt,
 	)
 	if err != nil {
+		slog.Error("GetByID user failed", "error", err, "user_id", id)
 		return nil, err
 	}
 	return u, nil
@@ -51,7 +53,9 @@ func (r *Repository) Update(ctx context.Context, id string, req UpdateRequest) (
 		&u.Role, &u.CreatedAt,
 	)
 	if err != nil {
+		slog.Error("Update user failed", "error", err, "user_id", id)
 		return nil, err
 	}
+	slog.Info("user database record updated", "user_id", id)
 	return u, nil
 }

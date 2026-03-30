@@ -2,10 +2,11 @@ package ws
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/PKR9759/LiftGo-api/internal/auth"
+	customMiddleware "github.com/PKR9759/LiftGo-api/internal/middleware"
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,7 +26,6 @@ func NewHandler(hub *Hub, db *pgxpool.Pool, jwtSecret []byte) *Handler {
 	}
 }
 
-// getUserID parses the JWT from the `token` query parameter
 func (h *Handler) getUserID(r *http.Request) (string, error) {
 	tokenStr := r.URL.Query().Get("token")
 	if tokenStr == "" {
@@ -51,16 +51,18 @@ func (h *Handler) getUserID(r *http.Request) (string, error) {
 	return claims.UserID, nil
 }
 
-// DriverWS handles WebSocket connections for drivers
 func (h *Handler) DriverWS(w http.ResponseWriter, r *http.Request) {
+	reqID, _ := r.Context().Value(customMiddleware.RequestIDKey).(string)
 	bookingID := chi.URLParam(r, "bookingID")
 	userID, err := h.getUserID(r)
 	if err != nil {
+		slog.Warn("DriverWS unauthorized", "error", err, "request_id", reqID)
 		http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	// Verify booking exists, status is confirmed, and driver matches
+	slog.Info("DriverWS connection attempt", "booking_id", bookingID, "user_id", userID, "request_id", reqID)
+
 	var exists bool
 	query := `
 		SELECT EXISTS(
@@ -70,18 +72,19 @@ func (h *Handler) DriverWS(w http.ResponseWriter, r *http.Request) {
 		)`
 	err = h.db.QueryRow(r.Context(), query, bookingID, userID).Scan(&exists)
 	if err != nil {
+		slog.Error("DriverWS db query failed", "error", err, "request_id", reqID)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	if !exists {
+		slog.Warn("DriverWS forbidden: invalid booking or driver mismatch", "booking_id", bookingID, "user_id", userID, "request_id", reqID)
 		http.Error(w, "Forbidden: Invalid booking or driver mismatch", http.StatusForbidden)
 		return
 	}
 
-	// Upgrade connection
 	conn, err := Upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WS upgrade error: %v", err)
+		slog.Error("WS upgrade error", "error", err, "booking_id", bookingID, "request_id", reqID)
 		return
 	}
 
@@ -95,23 +98,24 @@ func (h *Handler) DriverWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.hub.register <- client
+	slog.Info("websocket driver client successfully connected", "booking_id", bookingID, "user_id", userID)
 
-	// Start WritePump in a goroutine
 	go client.WritePump()
-	// ReadPump blocks until the connection is closed
 	client.ReadPump()
 }
 
-// RiderWS handles WebSocket connections for riders
 func (h *Handler) RiderWS(w http.ResponseWriter, r *http.Request) {
+	reqID, _ := r.Context().Value(customMiddleware.RequestIDKey).(string)
 	bookingID := chi.URLParam(r, "bookingID")
 	userID, err := h.getUserID(r)
 	if err != nil {
+		slog.Warn("RiderWS unauthorized", "error", err, "request_id", reqID)
 		http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	// Verify booking exists, status is confirmed, and rider matches
+	slog.Info("RiderWS connection attempt", "booking_id", bookingID, "user_id", userID, "request_id", reqID)
+
 	var exists bool
 	query := `
 		SELECT EXISTS(
@@ -120,18 +124,19 @@ func (h *Handler) RiderWS(w http.ResponseWriter, r *http.Request) {
 		)`
 	err = h.db.QueryRow(r.Context(), query, bookingID, userID).Scan(&exists)
 	if err != nil {
+		slog.Error("RiderWS db query failed", "error", err, "request_id", reqID)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	if !exists {
+		slog.Warn("RiderWS forbidden: invalid booking or rider mismatch", "booking_id", bookingID, "user_id", userID, "request_id", reqID)
 		http.Error(w, "Forbidden: Invalid booking or rider mismatch", http.StatusForbidden)
 		return
 	}
 
-	// Upgrade connection
 	conn, err := Upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WS upgrade error: %v", err)
+		slog.Error("WS upgrade error", "error", err, "booking_id", bookingID, "request_id", reqID)
 		return
 	}
 
@@ -145,9 +150,8 @@ func (h *Handler) RiderWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.hub.register <- client
+	slog.Info("websocket rider client successfully connected", "booking_id", bookingID, "user_id", userID)
 
-	// Start WritePump in a goroutine
 	go client.WritePump()
-	// ReadPump blocks, dropping client's incoming messages silently
 	client.ReadPump()
 }

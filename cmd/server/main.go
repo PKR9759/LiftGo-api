@@ -3,8 +3,7 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/PKR9759/LiftGo-api/internal/auth"
 	"github.com/PKR9759/LiftGo-api/internal/booking"
 	"github.com/PKR9759/LiftGo-api/internal/db"
+	customMiddleware "github.com/PKR9759/LiftGo-api/internal/middleware"
 	"github.com/PKR9759/LiftGo-api/internal/notification"
 	"github.com/PKR9759/LiftGo-api/internal/review"
 	"github.com/PKR9759/LiftGo-api/internal/ride"
@@ -25,23 +25,34 @@ import (
 )
 
 func main() {
+	var level slog.Level
+	if os.Getenv("LOG_LEVEL") == "debug" {
+		level = slog.LevelDebug
+	} else {
+		level = slog.LevelInfo
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	slog.SetDefault(logger)
+
 	if err := godotenv.Load(); err != nil {
-		log.Println("no .env file, reading from environment")
+		slog.Debug("no .env file, reading from environment")
 	}
 
 	ctx := context.Background()
 
 	pool, err := db.Connect(ctx)
 	if err != nil {
-		log.Fatalf("db connect: %v", err)
+		slog.Error("db connect failure", "error", err)
+		os.Exit(1)
 	}
 	defer pool.Close()
-	log.Println("database connected")
+	slog.Info("database connected")
 
 	if err := db.RunMigrations(ctx, pool); err != nil {
-		log.Fatalf("migrations: %v", err)
+		slog.Error("migrations failure", "error", err)
+		os.Exit(1)
 	}
-	log.Println("migrations complete")
+	slog.Info("migrations complete")
 
 	// ── websocket hub ───────────────────────────────────────
 	hub := ws.NewHub()
@@ -62,9 +73,9 @@ func main() {
 
 	// ── router ───────────────────────────────────────────────
 	r := chi.NewRouter()
-	r.Use(middleware.Logger)
+	r.Use(customMiddleware.RequestID)
+	r.Use(customMiddleware.RequestLogger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.RequestID)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: []string{
 			"http://localhost:3000",
@@ -74,7 +85,7 @@ func main() {
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Requested-With"},
 		AllowCredentials: true,
-		MaxAge:           300, //Added a cache duration (in seconds) for the preflight OPTIONS requests. This stops the browser from sending a redundant CORS check before every single API call, speeding up app's overall performance.
+		MaxAge:           300,
 	}))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +124,6 @@ func main() {
 		r.Put("/{id}", rideHandler.Update)
 		r.Put("/{id}/status", rideHandler.UpdateStatus)
 		r.Delete("/{id}", rideHandler.Cancel)
-		// new ride level handlers mapped to bookingHandler logically
 		r.Get("/{id}/bookings", bookingHandler.GetRideBookings)
 		r.Put("/{id}/start-ride", bookingHandler.StartRide)
 		r.Get("/{id}/status-summary", rideHandler.GetStatusSummary)
@@ -151,7 +161,6 @@ func main() {
 	})
 
 	// ── websocket routes ──────────────────────────────────────
-	// Mounted outside auth middleware because token is tested manually via query param
 	r.Get("/ws/driver/{bookingID}", wsHandler.DriverWS)
 	r.Get("/ws/rider/{bookingID}", wsHandler.RiderWS)
 
@@ -161,6 +170,11 @@ func main() {
 		port = "8080"
 	}
 
-	fmt.Printf("LiftGo API running on :%s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, r))
+	slog.Info("LiftGo API starting", "port", port)
+
+	err = http.ListenAndServe(":"+port, r)
+	if err != nil {
+		slog.Error("server fatal error", "error", err)
+		os.Exit(1)
+	}
 }

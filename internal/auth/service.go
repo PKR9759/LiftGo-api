@@ -4,6 +4,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"time"
 
@@ -21,7 +22,7 @@ func NewService(db *pgxpool.Pool) *Service {
 	return &Service{db: db}
 }
 
-func (s *Service) Register(ctx context.Context, req RegisterRequest) (*AuthResponse, error) {
+func (s *Service) Register(ctx context.Context, req RegisterRequest, reqID string) (*AuthResponse, error) {
 	if req.Name == "" || req.Email == "" || req.Password == "" {
 		return nil, errors.New("name, email and password are required")
 	}
@@ -37,6 +38,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*AuthRespo
 		`SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)`, req.Email,
 	).Scan(&exists)
 	if err != nil {
+		slog.Error("query error checking email existence", "error", err, "request_id", reqID)
 		return nil, err
 	}
 	if exists {
@@ -45,6 +47,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*AuthRespo
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
+		slog.Error("password hashing error", "error", err, "request_id", reqID)
 		return nil, err
 	}
 
@@ -56,11 +59,13 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*AuthRespo
 		req.Name, req.Email, string(hash), req.Phone, req.Role,
 	).Scan(&id, &name, &email, &role)
 	if err != nil {
+		slog.Error("insert user error", "error", err, "request_id", reqID)
 		return nil, err
 	}
 
 	token, err := generateToken(id, email, role)
 	if err != nil {
+		slog.Error("token generation error", "error", err, "request_id", reqID)
 		return nil, err
 	}
 
@@ -70,7 +75,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*AuthRespo
 	}, nil
 }
 
-func (s *Service) Login(ctx context.Context, req LoginRequest) (*AuthResponse, error) {
+func (s *Service) Login(ctx context.Context, req LoginRequest, reqID string) (*AuthResponse, error) {
 	if req.Email == "" || req.Password == "" {
 		return nil, errors.New("email and password are required")
 	}
@@ -84,6 +89,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*AuthResponse, e
 		return nil, errors.New("invalid email or password")
 	}
 	if err != nil {
+		slog.Error("query error fetching user by email", "error", err, "request_id", reqID)
 		return nil, err
 	}
 
@@ -93,6 +99,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*AuthResponse, e
 
 	token, err := generateToken(id, email, role)
 	if err != nil {
+		slog.Error("token generation error", "error", err, "request_id", reqID)
 		return nil, err
 	}
 
