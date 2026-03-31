@@ -143,7 +143,7 @@ func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string) {
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		Domain:   domain,
-		Path:     "/api/auth/refresh",
+		Path:     "/",
 		MaxAge:   604800, // 7 days
 	})
 }
@@ -164,7 +164,7 @@ func clearAuthCookies(w http.ResponseWriter) {
 		Value:    "",
 		HttpOnly: true,
 		Domain:   domain,
-		Path:     "/api/auth/refresh",
+		Path:     "/",
 		MaxAge:   -1,
 	})
 }
