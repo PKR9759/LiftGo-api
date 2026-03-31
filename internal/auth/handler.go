@@ -69,26 +69,50 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	reqID, _ := r.Context().Value(customMiddleware.RequestIDKey).(string)
 	slog.Info("Handler.Refresh entry", "request_id", reqID)
 
-	cookie, err := r.Cookie("refresh_token")
-	if err != nil {
-		slog.Warn("refresh token cookie missing", "error", err, "request_id", reqID)
+	var validResp *AuthResponse
+	var lastErr error
+	var attemptCount int
+
+	for _, c := range r.Cookies() {
+		if c.Name == "refresh_token" {
+			attemptCount++
+			resp, err := h.service.RefreshSession(r.Context(), c.Value, reqID)
+			if err == nil {
+				validResp = resp
+				break
+			}
+			lastErr = err
+		}
+	}
+
+	if attemptCount == 0 {
+		slog.Warn("refresh token cookie entirely missing", "request_id", reqID)
 		clearAuthCookies(w)
 		utils.WriteError(w, http.StatusUnauthorized, "missing refresh token")
 		return
 	}
 
-	rawRefresh := cookie.Value
-	resp, err := h.service.RefreshSession(r.Context(), rawRefresh, reqID)
-	if err != nil {
-		slog.Warn("refresh failed", "error", err, "request_id", reqID)
+	if validResp == nil {
+		slog.Warn("refresh failed for all provided tokens", "error", lastErr, "request_id", reqID)
 		clearAuthCookies(w)
 		utils.WriteError(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 
-	setAuthCookies(w, resp.AccessToken, resp.RefreshToken)
-	slog.Info("session refreshed successfully", "user_id", resp.User.ID, "request_id", reqID)
-	utils.WriteJSON(w, http.StatusOK, resp)
+	// Make sure to aggressively clear the old path-restricted cookie just in case
+	domain := os.Getenv("COOKIE_DOMAIN")
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh_token",
+		Value:    "",
+		HttpOnly: true,
+		Domain:   domain,
+		Path:     "/api/auth/refresh",
+		MaxAge:   -1,
+	})
+
+	setAuthCookies(w, validResp.AccessToken, validResp.RefreshToken)
+	slog.Info("session refreshed successfully", "user_id", validResp.User.ID, "request_id", reqID)
+	utils.WriteJSON(w, http.StatusOK, validResp)
 }
 
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {

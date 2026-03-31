@@ -17,7 +17,7 @@ func RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("access_token")
 		if err != nil {
-			slog.Warn("missing access_token cookie")
+			slog.Debug("missing access_token cookie")
 			utils.WriteError(w, http.StatusUnauthorized, "missing access token")
 			return
 		}
