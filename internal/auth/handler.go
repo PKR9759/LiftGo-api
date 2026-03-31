@@ -123,13 +123,15 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 
 func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string) {
 	secure := os.Getenv("COOKIE_SECURE") == "true"
+	domain := os.Getenv("COOKIE_DOMAIN")
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "access_token",
 		Value:    accessToken,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
+		Domain:   domain,
 		Path:     "/",
 		MaxAge:   900, // 15 min
 	})
@@ -139,17 +141,21 @@ func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string) {
 		Value:    refreshToken,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
+		Domain:   domain,
 		Path:     "/api/auth/refresh",
 		MaxAge:   604800, // 7 days
 	})
 }
 
 func clearAuthCookies(w http.ResponseWriter) {
+	domain := os.Getenv("COOKIE_DOMAIN")
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     "access_token",
 		Value:    "",
 		HttpOnly: true,
+		Domain:   domain,
 		Path:     "/",
 		MaxAge:   -1,
 	})
@@ -157,6 +163,7 @@ func clearAuthCookies(w http.ResponseWriter) {
 		Name:     "refresh_token",
 		Value:    "",
 		HttpOnly: true,
+		Domain:   domain,
 		Path:     "/api/auth/refresh",
 		MaxAge:   -1,
 	})
