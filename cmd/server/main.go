@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -96,7 +97,42 @@ func main() {
 	}))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
+		useCache := os.Getenv("USE_CACHE") == "true"
+
+		// Ping database
+		dbStatus := "ok"
+		if err := pool.Ping(r.Context()); err != nil {
+			dbStatus = "error"
+		}
+
+		// Ping Redis
+		redisStatus := "disabled"
+		if useCache {
+			if redisClient == nil {
+				redisStatus = "error"
+			} else if _, err := redisClient.Ping(r.Context()).Result(); err != nil {
+				redisStatus = "error"
+			} else {
+				redisStatus = "ok"
+			}
+		}
+
+		// Overall status: degraded when Redis is required but unavailable
+		overallStatus := "ok"
+		if dbStatus == "error" || (useCache && redisStatus == "error") {
+			overallStatus = "degraded"
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if overallStatus == "degraded" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":        overallStatus,
+			"database":      dbStatus,
+			"redis":         redisStatus,
+			"cache_enabled": useCache,
+		})
 	})
 
 	// ── auth ─────────────────────────────────────────────────
