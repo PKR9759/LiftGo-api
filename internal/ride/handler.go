@@ -4,17 +4,22 @@ package ride
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/PKR9759/LiftGo-api/internal/auth"
+	"github.com/PKR9759/LiftGo-api/internal/cache"
 	customMiddleware "github.com/PKR9759/LiftGo-api/internal/middleware"
 	"github.com/PKR9759/LiftGo-api/internal/notification"
 	"github.com/PKR9759/LiftGo-api/internal/utils"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 type Handler struct {
@@ -22,15 +27,43 @@ type Handler struct {
 	db          *pgxpool.Pool
 	emailClient *notification.EmailClient
 	pushClient  *notification.PushClient
+	rdb         *redis.Client // nil when USE_CACHE=false or Redis unavailable
 }
 
-func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.EmailClient, pushClient *notification.PushClient) *Handler {
+func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.EmailClient, pushClient *notification.PushClient, rdb *redis.Client) *Handler {
 	return &Handler{
 		service:     service,
 		db:          db,
 		emailClient: emailClient,
 		pushClient:  pushClient,
+		rdb:         rdb,
 	}
+}
+
+// nearbyKey builds a deterministic cache key for FindNearby results.
+// Coordinates are rounded to 4 decimal places so near-identical searches
+// (e.g. GPS jitter) still hit the same cache entry.
+func nearbyKey(originLat, originLng, destLat, destLng, radius float64) string {
+	round4 := func(v float64) float64 { return math.Round(v*10000) / 10000 }
+	return fmt.Sprintf("match:%.4f:%.4f:%.4f:%.4f:%.0f",
+		round4(originLat), round4(originLng),
+		round4(destLat), round4(destLng),
+		radius,
+	)
+}
+
+// invalidateMatchCache deletes all "match:*" keys from Redis using SCAN.
+// It is called after any mutation that affects searchable rides.
+func (h *Handler) invalidateMatchCache(ctx context.Context) {
+	if h.rdb == nil || os.Getenv("USE_CACHE") != "true" {
+		return
+	}
+	n, err := cache.InvalidatePattern(ctx, h.rdb, "match:*")
+	if err != nil {
+		slog.Warn("match cache invalidation error", "error", err)
+		return
+	}
+	slog.Info("match cache invalidated", "keys_deleted", n)
 }
 
 // GET /api/rides/nearby?origin_lat=&origin_lng=&dest_lat=&dest_lng=&radius=
@@ -53,7 +86,33 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 		excludeUserID = claims.UserID
 	}
 
-	rides, err := h.service.FindNearby(r.Context(), NearbyParams{
+	ctx := r.Context()
+	useCache := os.Getenv("USE_CACHE") == "true"
+
+	// ── Cache lookup ─────────────────────────────────────────────────────────
+	if useCache && h.rdb != nil {
+		cacheKey := nearbyKey(originLat, originLng, destLat, destLng, radius)
+		start := time.Now()
+
+		val, err := h.rdb.Get(ctx, cacheKey).Bytes()
+		if err == nil {
+			// Cache HIT
+			slog.Debug("FindNearby cache hit",
+				"key", cacheKey,
+				"latency_ms", time.Since(start).Milliseconds(),
+				"request_id", reqID,
+			)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Cache", "HIT")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(val)
+			return
+		}
+	}
+
+	// ── Cache MISS / cache disabled — run the real query ─────────────────────
+	queryStart := time.Now()
+	rides, err := h.service.FindNearby(ctx, NearbyParams{
 		OriginLat:     originLat,
 		OriginLng:     originLng,
 		DestLat:       destLat,
@@ -65,6 +124,19 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 		slog.Error("FindNearby failed", "error", err, "request_id", reqID)
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+
+	// ── Store in cache ───────────────────────────────────────────────────────
+	if useCache && h.rdb != nil {
+		cacheKey := nearbyKey(originLat, originLng, destLat, destLng, radius)
+		if data, err := json.Marshal(rides); err == nil {
+			h.rdb.Set(ctx, cacheKey, data, cache.TTL())
+			slog.Debug("FindNearby cache miss — stored result",
+				"key", cacheKey,
+				"duration_ms", time.Since(queryStart).Milliseconds(),
+				"request_id", reqID,
+			)
+		}
 	}
 
 	utils.WriteJSON(w, http.StatusOK, rides)
@@ -108,6 +180,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("ride created successfully", "ride_id", ride.ID, "user_id", claims.UserID, "request_id", reqID)
+	h.invalidateMatchCache(r.Context())
 	utils.WriteJSON(w, http.StatusCreated, ride)
 }
 
@@ -151,6 +224,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("ride updated successfully", "ride_id", id, "user_id", claims.UserID, "request_id", reqID)
+	h.invalidateMatchCache(r.Context())
 	utils.WriteJSON(w, http.StatusOK, ride)
 }
 
@@ -176,6 +250,9 @@ func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("ride status updated successfully", "ride_id", id, "status", req.Status, "user_id", claims.UserID, "request_id", reqID)
+	// Invalidate match cache whenever a ride's status changes — it may no
+	// longer be searchable (e.g. completed, full, cancelled).
+	h.invalidateMatchCache(r.Context())
 
 	go func(status string, rID string, drvID string, rqID string) {
 		if status != "active" && status != "completed" {
@@ -295,6 +372,7 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	)
 
 	slog.Info("ride cancelled successfully", "ride_id", id, "user_id", claims.UserID, "request_id", reqID)
+	h.invalidateMatchCache(r.Context())
 	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "ride cancelled"})
 }
 

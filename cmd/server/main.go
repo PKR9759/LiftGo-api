@@ -14,6 +14,7 @@ import (
 
 	"github.com/PKR9759/LiftGo-api/internal/auth"
 	"github.com/PKR9759/LiftGo-api/internal/booking"
+	"github.com/PKR9759/LiftGo-api/internal/cache"
 	"github.com/PKR9759/LiftGo-api/internal/db"
 	customMiddleware "github.com/PKR9759/LiftGo-api/internal/middleware"
 	"github.com/PKR9759/LiftGo-api/internal/notification"
@@ -54,6 +55,11 @@ func main() {
 	}
 	slog.Info("migrations complete")
 
+	// ── redis ────────────────────────────────────────────────
+	redisClient, _ := cache.NewClient(ctx)
+	// redisClient may be nil if REDIS_URL is unset / USE_CACHE=false — all
+	// downstream callers are nil-safe and skip Redis logic in that case.
+
 	// ── websocket hub ───────────────────────────────────────
 	hub := ws.NewHub()
 	go hub.Run()
@@ -65,7 +71,7 @@ func main() {
 	// ── handlers ────────────────────────────────────────────
 	authHandler := auth.NewHandler(auth.NewService(pool))
 	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
-	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)), pool, emailClient, pushClient)
+	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)), pool, emailClient, pushClient, redisClient)
 	seekHandler := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
 	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)), pool, emailClient, pushClient, hub)
 	reviewHandler := review.NewHandler(review.NewService(review.NewRepository(pool)))
@@ -75,6 +81,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(customMiddleware.RequestID)
 	r.Use(customMiddleware.RequestLogger)
+	r.Use(customMiddleware.RateLimit(redisClient))
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: []string{
