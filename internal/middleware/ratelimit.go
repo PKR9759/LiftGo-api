@@ -84,7 +84,7 @@ func RateLimit(rdb *redis.Client) func(http.Handler) http.Handler {
 			if count > cfg.max {
 				slog.Warn("rate limit exceeded",
 					"ip", ip,
-					"request_count", count,
+					"count", count,
 					"limit", cfg.max,
 					"path", r.URL.Path,
 				)

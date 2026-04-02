@@ -63,7 +63,7 @@ func (h *Handler) invalidateMatchCache(ctx context.Context) {
 		slog.Warn("match cache invalidation error", "error", err)
 		return
 	}
-	slog.Info("match cache invalidated", "keys_deleted", n)
+	slog.Info("cache invalidated", "pattern", "match:*", "keys_deleted", n)
 }
 
 // GET /api/rides/nearby?origin_lat=&origin_lng=&dest_lat=&dest_lng=&radius=
@@ -111,7 +111,6 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Cache MISS / cache disabled — run the real query ─────────────────────
-	queryStart := time.Now()
 	rides, err := h.service.FindNearby(ctx, NearbyParams{
 		OriginLat:     originLat,
 		OriginLng:     originLng,
@@ -129,11 +128,13 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 	// ── Store in cache ───────────────────────────────────────────────────────
 	if useCache && h.rdb != nil {
 		cacheKey := nearbyKey(originLat, originLng, destLat, destLng, radius)
+		slog.Debug("cache miss", "key", cacheKey, "request_id", reqID)
 		if data, err := json.Marshal(rides); err == nil {
-			h.rdb.Set(ctx, cacheKey, data, cache.TTL())
-			slog.Debug("FindNearby cache miss — stored result",
+			ttl := cache.TTL()
+			h.rdb.Set(ctx, cacheKey, data, ttl)
+			slog.Debug("cache set",
 				"key", cacheKey,
-				"duration_ms", time.Since(queryStart).Milliseconds(),
+				"ttl_seconds", int(ttl.Seconds()),
 				"request_id", reqID,
 			)
 		}

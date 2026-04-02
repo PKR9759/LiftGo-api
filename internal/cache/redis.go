@@ -30,7 +30,7 @@ func NewClient(ctx context.Context) (*redis.Client, error) {
 			slog.Error("USE_CACHE=true but REDIS_URL is not set — cannot start without Redis")
 			os.Exit(1)
 		}
-		slog.Warn("REDIS_URL not set — Redis caching and rate limiting disabled")
+		slog.Info("Redis skipped — USE_CACHE=false or REDIS_URL not set, caching and rate limiting disabled")
 		return nil, nil
 	}
 
