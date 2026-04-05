@@ -21,6 +21,12 @@ func (s *Service) Create(ctx context.Context, riderID string, req CreateRequest)
 	if req.Seats < 1 {
 		return nil, errors.New("seats must be at least 1")
 	}
+	if req.PickupLat < -90 || req.PickupLat > 90 || req.DropoffLat < -90 || req.DropoffLat > 90 {
+		return nil, errors.New("pickup_lat and dropoff_lat must be between -90 and 90")
+	}
+	if req.PickupLng < -180 || req.PickupLng > 180 || req.DropoffLng < -180 || req.DropoffLng > 180 {
+		return nil, errors.New("pickup_lng and dropoff_lng must be between -180 and 180")
+	}
 	return s.repo.Create(ctx, riderID, req)
 }
 

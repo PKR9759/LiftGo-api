@@ -4,6 +4,7 @@ package booking
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -62,6 +63,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	booking, err := h.service.Create(r.Context(), claims.UserID, req)
 	if err != nil {
 		slog.Error("Create booking failed", "error", err, "request_id", reqID, "user_id", claims.UserID)
+		if errors.Is(err, ErrSegmentCapacity) {
+			utils.WriteError(w, http.StatusConflict, err.Error())
+			return
+		}
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}

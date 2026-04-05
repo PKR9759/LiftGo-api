@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -84,12 +85,9 @@ func main() {
 	r.Use(customMiddleware.RequestLogger)
 	r.Use(customMiddleware.RateLimit(redisClient))
 	r.Use(middleware.Recoverer)
+	allowedOrigins := allowedOriginsFromEnv()
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins: []string{
-			"http://localhost:3000",
-			"https://liftgo.tech",
-			"https://www.liftgo.tech",
-		},
+		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Requested-With"},
 		AllowCredentials: true,
@@ -226,5 +224,27 @@ func main() {
 	if err != nil {
 		slog.Error("server fatal error", "error", err)
 		os.Exit(1)
+	}
+}
+
+func allowedOriginsFromEnv() []string {
+	if raw := os.Getenv("CORS_ALLOWED_ORIGINS"); raw != "" {
+		parts := strings.Split(raw, ",")
+		origins := make([]string, 0, len(parts))
+		for _, part := range parts {
+			origin := strings.TrimSpace(part)
+			if origin != "" {
+				origins = append(origins, origin)
+			}
+		}
+		if len(origins) > 0 {
+			return origins
+		}
+	}
+
+	return []string{
+		"http://localhost:3000",
+		"https://liftgo.tech",
+		"https://www.liftgo.tech",
 	}
 }
