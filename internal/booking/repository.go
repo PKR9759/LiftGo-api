@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -25,49 +26,86 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 	}
 	defer tx.Rollback(ctx)
 
-	// verify ride exists, is bookable, and has enough seats (don't decrement yet)
-	var rideID string
+	// Step A — Fetch the driver's ride route geometry
+	var route []byte // binary or asGeoJSON? We need it for PostGIS functions
+	var totalSeats int
 	var pricePerSeat float64
 	err = tx.QueryRow(ctx,
-		`SELECT id, price_per_seat FROM rides
-		 WHERE id = $1
-		   AND available_seats >= $2
-		   AND status IN ('scheduled', 'active')
+		`SELECT route, total_seats, price_per_seat FROM rides
+		 WHERE id = $1 AND status IN ('scheduled', 'active', 'full')
 		 FOR UPDATE`,
-		req.RideID, req.Seats,
-	).Scan(&rideID, &pricePerSeat)
+		req.RideID,
+	).Scan(&route, &totalSeats, &pricePerSeat)
 	if err != nil {
-		slog.Warn("failed to book seats or unavailable", "ride_id", req.RideID, "requested_seats", req.Seats)
-		return nil, fmt.Errorf("not enough seats or ride is unavailable")
+		slog.Warn("ride not found or unavailable for booking", "ride_id", req.RideID, "error", err)
+		return nil, fmt.Errorf("ride not found or is unavailable")
 	}
 
-	totalPrice := pricePerSeat * float64(req.Seats)
+	// Step B — Compute passenger's pickup and dropoff fractions
+	var pickupFraction, dropoffFraction float64
+	err = tx.QueryRow(ctx,
+		`SELECT 
+			ST_LineLocatePoint(route, ST_ClosestPoint(route, ST_SetSRID(ST_MakePoint($1, $2), 4326))),
+			ST_LineLocatePoint(route, ST_ClosestPoint(route, ST_SetSRID(ST_MakePoint($3, $4), 4326)))
+		 FROM rides WHERE id = $5`,
+		req.PickupLng, req.PickupLat, req.DropoffLng, req.DropoffLat, req.RideID,
+	).Scan(&pickupFraction, &dropoffFraction)
+	if err != nil {
+		slog.Error("failed to calculate ride fractions", "error", err, "ride_id", req.RideID)
+		return nil, fmt.Errorf("failed to calculate location on route")
+	}
 
-	// nullable seek_id
+	if pickupFraction >= dropoffFraction {
+		slog.Warn("invalid booking segment", "pickup", pickupFraction, "dropoff", dropoffFraction, "ride_id", req.RideID)
+		return nil, ErrInvalidSegmentOrder
+	}
+
+	// Step C — Capacity check using interval overlap
+	var occupiedSeats int
+	err = tx.QueryRow(ctx,
+		`SELECT COALESCE(SUM(b.seats), 0) AS occupied_seats
+		 FROM bookings b
+		 WHERE b.ride_id = $1
+		   AND b.status IN ('confirmed', 'rider_ready', 'picked_up')
+		   AND b.pickup_fraction < $3
+		   AND b.dropoff_fraction > $2`,
+		req.RideID, pickupFraction, dropoffFraction,
+	).Scan(&occupiedSeats)
+	if err != nil {
+		slog.Error("capacity check query failed", "error", err, "ride_id", req.RideID)
+		return nil, fmt.Errorf("failed to check seat capacity")
+	}
+
+	if occupiedSeats+req.Seats > totalSeats {
+		slog.Warn("insufficient segment capacity", "occupied", occupiedSeats, "requested", req.Seats, "total", totalSeats, "ride_id", req.RideID)
+		return nil, ErrSegmentCapacity
+	}
+
+	coverage := clamp01(dropoffFraction - pickupFraction)
+	segmentPricePerSeat := roundMoney(pricePerSeat * coverage)
+	totalPrice := roundMoney(segmentPricePerSeat * float64(req.Seats))
+
 	var seekID *string
 	if req.SeekID != "" {
 		seekID = &req.SeekID
 	}
 
-	// insert booking as pending (seats NOT decremented yet)
+	// Step D — Store fractions in the booking row
 	var bookingID, status string
 	err = tx.QueryRow(ctx,
-		`INSERT INTO bookings (ride_id, rider_id, seek_id, seats, total_price)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO bookings (ride_id, rider_id, seek_id, seats, total_price, pickup_fraction, dropoff_fraction)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id, status`,
-		req.RideID, riderID, seekID, req.Seats, totalPrice,
+		req.RideID, riderID, seekID, req.Seats, totalPrice, pickupFraction, dropoffFraction,
 	).Scan(&bookingID, &status)
 	if err != nil {
 		slog.Error("insert booking query failed", "error", err)
 		return nil, err
 	}
 
-	// if booking came from a seek, mark seek as matched
+	// Update seek if present
 	if seekID != nil {
-		_, err = tx.Exec(ctx,
-			`UPDATE seeks SET status = 'matched', updated_at = now()
-			 WHERE id = $1`, seekID,
-		)
+		_, err = tx.Exec(ctx, `UPDATE seeks SET status = 'matched', updated_at = now() WHERE id = $1`, seekID)
 		if err != nil {
 			slog.Error("failed to update seek status", "error", err, "seek_id", *seekID)
 			return nil, err
@@ -79,19 +117,22 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		return nil, err
 	}
 
-	slog.Info("booking recorded in db", "booking_id", bookingID, "ride_id", rideID, "rider_id", riderID)
+	slog.Info("booking recorded with segments", "booking_id", bookingID, "pickup_f", pickupFraction, "dropoff_f", dropoffFraction)
 	return r.GetByID(ctx, bookingID)
 }
 
 func (r *Repository) GetByID(ctx context.Context, id string) (*Booking, error) {
 	b := &Booking{}
+	var ridePricePerSeat float64
 	err := r.db.QueryRow(ctx,
 		`SELECT b.id, b.ride_id, b.rider_id, ur.name,
 		        ri.driver_id, ud.name,
 		        b.seek_id,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
-		        b.seats, b.status, ri.status, b.total_price, b.created_at,
-		        b.rider_ready_lat, b.rider_ready_lng
+		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
+		        b.rider_ready_lat, b.rider_ready_lng,
+		        COALESCE(b.pickup_fraction, 0) AS pickup_fraction,
+		        COALESCE(b.dropoff_fraction, 0) AS dropoff_fraction
 		 FROM bookings b
 		 JOIN users  ur ON ur.id = b.rider_id
 		 JOIN rides  ri ON ri.id = b.ride_id
@@ -102,13 +143,15 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Booking, error) {
 		&b.DriverID, &b.DriverName,
 		&b.SeekID,
 		&b.OriginLabel, &b.DestLabel, &b.DepartureAt,
-		&b.Seats, &b.Status, &b.RideStatus, &b.TotalPrice, &b.CreatedAt,
+		&b.Seats, &b.Status, &b.RideStatus, &b.TotalPrice, &ridePricePerSeat, &b.CreatedAt,
 		&b.RiderReadyLat, &b.RiderReadyLng,
+		&b.PickupFraction, &b.DropoffFraction,
 	)
 	if err != nil {
 		slog.Error("GetByID booking failed", "error", err, "booking_id", id)
 		return nil, err
 	}
+	applySegmentPricing(b, ridePricePerSeat)
 	return b, nil
 }
 
@@ -118,8 +161,10 @@ func (r *Repository) GetByRider(ctx context.Context, riderID string) ([]*Booking
 		        ri.driver_id, ud.name,
 		        b.seek_id,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
-		        b.seats, b.status, ri.status, b.total_price, b.created_at,
-		        b.rider_ready_lat, b.rider_ready_lng
+		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
+		        b.rider_ready_lat, b.rider_ready_lng,
+		        COALESCE(b.pickup_fraction, 0) AS pickup_fraction,
+		        COALESCE(b.dropoff_fraction, 0) AS dropoff_fraction
 		 FROM bookings b
 		 JOIN users  ur ON ur.id = b.rider_id
 		 JOIN rides  ri ON ri.id = b.ride_id
@@ -141,8 +186,10 @@ func (r *Repository) GetIncoming(ctx context.Context, driverID string) ([]*Booki
 		        ri.driver_id, ud.name,
 		        b.seek_id,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
-		        b.seats, b.status, ri.status, b.total_price, b.created_at,
-		        b.rider_ready_lat, b.rider_ready_lng
+		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
+		        b.rider_ready_lat, b.rider_ready_lng,
+		        COALESCE(b.pickup_fraction, 0) AS pickup_fraction,
+		        COALESCE(b.dropoff_fraction, 0) AS dropoff_fraction
 		 FROM bookings b
 		 JOIN users  ur ON ur.id = b.rider_id
 		 JOIN rides  ri ON ri.id = b.ride_id
@@ -320,14 +367,16 @@ func (r *Repository) GetRideBookingsWithRiderInfo(ctx context.Context, rideID, d
 		        ri.driver_id, ud.name,
 		        b.seek_id,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
-		        b.seats, b.status, ri.status, b.total_price, b.created_at,
+		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
 		        b.picked_up_at, b.dropped_at,
 		        ur.avg_rating,
 		        COALESCE(s.origin_lat, ri.origin_lat) AS rider_origin_lat,
 		        COALESCE(s.origin_lng, ri.origin_lng) AS rider_origin_lng,
 		        COALESCE(s.dest_lat, ri.dest_lat)     AS rider_dest_lat,
 		        COALESCE(s.dest_lng, ri.dest_lng)     AS rider_dest_lng,
-		        b.rider_ready_lat, b.rider_ready_lng
+		        b.rider_ready_lat, b.rider_ready_lng,
+		        COALESCE(b.pickup_fraction, 0) AS pickup_fraction,
+		        COALESCE(b.dropoff_fraction, 0) AS dropoff_fraction
 		 FROM bookings b
 		 JOIN users  ur ON ur.id = b.rider_id
 		 JOIN rides  ri ON ri.id = b.ride_id
@@ -346,22 +395,25 @@ func (r *Repository) GetRideBookingsWithRiderInfo(ctx context.Context, rideID, d
 	var list []*BookingWithRiderInfo
 	for rows.Next() {
 		var bi BookingWithRiderInfo
+		var ridePricePerSeat float64
 		err := rows.Scan(
 			&bi.ID, &bi.RideID, &bi.RiderID, &bi.RiderName,
 			&bi.DriverID, &bi.DriverName,
 			&bi.SeekID,
 			&bi.OriginLabel, &bi.DestLabel, &bi.DepartureAt,
-			&bi.Seats, &bi.Status, &bi.RideStatus, &bi.TotalPrice, &bi.CreatedAt,
+			&bi.Seats, &bi.Status, &bi.RideStatus, &bi.TotalPrice, &ridePricePerSeat, &bi.CreatedAt,
 			&bi.PickedUpAt, &bi.DroppedAt,
 			&bi.RiderRating,
 			&bi.RiderOriginLat, &bi.RiderOriginLng,
 			&bi.RiderDestLat, &bi.RiderDestLng,
 			&bi.RiderReadyLat, &bi.RiderReadyLng,
+			&bi.PickupFraction, &bi.DropoffFraction,
 		)
 		if err != nil {
 			slog.Error("scan error GetRideBookings", "error", err)
 			return nil, err
 		}
+		applySegmentPricing(&bi.Booking, ridePricePerSeat)
 		list = append(list, &bi)
 	}
 	return list, nil
@@ -510,19 +562,48 @@ func scanBookings(rows interface {
 	var bookings []*Booking
 	for rows.Next() {
 		b := &Booking{}
+		var ridePricePerSeat float64
 		err := rows.Scan(
 			&b.ID, &b.RideID, &b.RiderID, &b.RiderName,
 			&b.DriverID, &b.DriverName,
 			&b.SeekID,
 			&b.OriginLabel, &b.DestLabel, &b.DepartureAt,
-			&b.Seats, &b.Status, &b.RideStatus, &b.TotalPrice, &b.CreatedAt,
+			&b.Seats, &b.Status, &b.RideStatus, &b.TotalPrice, &ridePricePerSeat, &b.CreatedAt,
 			&b.RiderReadyLat, &b.RiderReadyLng,
+			&b.PickupFraction, &b.DropoffFraction,
 		)
 		if err != nil {
 			slog.Error("scanBookings failed", "error", err)
 			return nil, err
 		}
+		applySegmentPricing(b, ridePricePerSeat)
 		bookings = append(bookings, b)
 	}
 	return bookings, nil
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func roundMoney(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
+func applySegmentPricing(b *Booking, fullRoutePricePerSeat float64) {
+	coverage := clamp01(b.DropoffFraction - b.PickupFraction)
+	b.FullRoutePricePerSeat = roundMoney(fullRoutePricePerSeat)
+	b.SegmentCoveragePct = roundMoney(coverage * 100)
+	b.SegmentPricePerSeat = roundMoney(fullRoutePricePerSeat * coverage)
+	b.TotalFullPrice = roundMoney(fullRoutePricePerSeat * float64(b.Seats))
+	b.TotalSavings = roundMoney(b.TotalFullPrice - b.TotalPrice)
+	if b.TotalSavings < 0 {
+		b.TotalSavings = 0
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	customMiddleware "github.com/PKR9759/LiftGo-api/internal/middleware"
 	"github.com/PKR9759/LiftGo-api/internal/utils"
@@ -147,6 +148,7 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 
 func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string) {
 	secure := os.Getenv("COOKIE_SECURE") == "true"
+	sameSite := parseSameSite(os.Getenv("COOKIE_SAMESITE"))
 	domain := os.Getenv("COOKIE_DOMAIN")
 
 	http.SetCookie(w, &http.Cookie{
@@ -154,7 +156,7 @@ func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string) {
 		Value:    accessToken,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: sameSite,
 		Domain:   domain,
 		Path:     "/",
 		MaxAge:   900, // 15 min
@@ -165,11 +167,22 @@ func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string) {
 		Value:    refreshToken,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: sameSite,
 		Domain:   domain,
 		Path:     "/",
 		MaxAge:   604800, // 7 days
 	})
+}
+
+func parseSameSite(value string) http.SameSite {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "none":
+		return http.SameSiteNoneMode
+	case "strict":
+		return http.SameSiteStrictMode
+	default:
+		return http.SameSiteLaxMode
+	}
 }
 
 func clearAuthCookies(w http.ResponseWriter) {

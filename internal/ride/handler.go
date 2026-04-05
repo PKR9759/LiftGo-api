@@ -43,12 +43,15 @@ func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.Em
 // nearbyKey builds a deterministic cache key for FindNearby results.
 // Coordinates are rounded to 4 decimal places so near-identical searches
 // (e.g. GPS jitter) still hit the same cache entry.
-func nearbyKey(originLat, originLng, destLat, destLng, radius float64) string {
+func nearbyKey(originLat, originLng, destLat, destLng, radius float64, seatsNeeded int) string {
 	round4 := func(v float64) float64 { return math.Round(v*10000) / 10000 }
-	return fmt.Sprintf("match:%.4f:%.4f:%.4f:%.4f:%.0f",
+	if radius <= 0 {
+		radius = 1000
+	}
+	return fmt.Sprintf("match:%.4f:%.4f:%.4f:%.4f:%.0f:%d",
 		round4(originLat), round4(originLng),
 		round4(destLat), round4(destLng),
-		radius,
+		radius, seatsNeeded,
 	)
 }
 
@@ -66,7 +69,7 @@ func (h *Handler) invalidateMatchCache(ctx context.Context) {
 	slog.Info("cache invalidated", "pattern", "match:*", "keys_deleted", n)
 }
 
-// GET /api/rides/nearby?origin_lat=&origin_lng=&dest_lat=&dest_lng=&radius=
+// GET /api/rides/nearby?origin_lat=&origin_lng=&dest_lat=&dest_lng=&radius=&seats_needed=
 func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 	reqID, _ := r.Context().Value(customMiddleware.RequestIDKey).(string)
 
@@ -75,11 +78,16 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 	destLat, _ := strconv.ParseFloat(r.URL.Query().Get("dest_lat"), 64)
 	destLng, _ := strconv.ParseFloat(r.URL.Query().Get("dest_lng"), 64)
 	radius, _ := strconv.ParseFloat(r.URL.Query().Get("radius"), 64)
+	seatsNeeded, _ := strconv.Atoi(r.URL.Query().Get("seats_needed"))
+	if seatsNeeded <= 0 {
+		seatsNeeded = 1
+	}
 
 	slog.Info("Handler.FindNearby entry",
 		"request_id", reqID,
 		"origin_lat", originLat, "origin_lng", originLng,
-		"dest_lat", destLat, "dest_lng", destLng, "radius", radius)
+		"dest_lat", destLat, "dest_lng", destLng, "radius", radius,
+		"seats_needed", seatsNeeded)
 
 	var excludeUserID string
 	if claims := auth.GetUserFromContext(r); claims != nil {
@@ -91,7 +99,7 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 
 	// ── Cache lookup ─────────────────────────────────────────────────────────
 	if useCache && h.rdb != nil {
-		cacheKey := nearbyKey(originLat, originLng, destLat, destLng, radius)
+		cacheKey := nearbyKey(originLat, originLng, destLat, destLng, radius, seatsNeeded)
 		start := time.Now()
 
 		val, err := h.rdb.Get(ctx, cacheKey).Bytes()
@@ -118,6 +126,7 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 		DestLng:       destLng,
 		RadiusMeters:  radius,
 		ExcludeUserID: excludeUserID,
+		SeatsNeeded:   seatsNeeded,
 	})
 	if err != nil {
 		slog.Error("FindNearby failed", "error", err, "request_id", reqID)
@@ -127,10 +136,10 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 
 	// ── Store in cache ───────────────────────────────────────────────────────
 	if useCache && h.rdb != nil {
-		cacheKey := nearbyKey(originLat, originLng, destLat, destLng, radius)
+		cacheKey := nearbyKey(originLat, originLng, destLat, destLng, radius, seatsNeeded)
 		slog.Debug("cache miss", "key", cacheKey, "request_id", reqID)
 		if data, err := json.Marshal(rides); err == nil {
-			ttl := cache.TTL()
+			ttl := 30 * time.Second
 			h.rdb.Set(ctx, cacheKey, data, ttl)
 			slog.Debug("cache set",
 				"key", cacheKey,
