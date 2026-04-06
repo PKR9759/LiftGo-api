@@ -73,11 +73,45 @@ func (h *Handler) invalidateMatchCache(ctx context.Context) {
 func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 	reqID, _ := r.Context().Value(customMiddleware.RequestIDKey).(string)
 
-	originLat, _ := strconv.ParseFloat(r.URL.Query().Get("origin_lat"), 64)
-	originLng, _ := strconv.ParseFloat(r.URL.Query().Get("origin_lng"), 64)
-	destLat, _ := strconv.ParseFloat(r.URL.Query().Get("dest_lat"), 64)
-	destLng, _ := strconv.ParseFloat(r.URL.Query().Get("dest_lng"), 64)
-	radius, _ := strconv.ParseFloat(r.URL.Query().Get("radius"), 64)
+	originLat, err := parseRequiredFloatQuery(r, "origin_lat")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	originLng, err := parseRequiredFloatQuery(r, "origin_lng")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	destLat, err := parseRequiredFloatQuery(r, "dest_lat")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	destLng, err := parseRequiredFloatQuery(r, "dest_lng")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if originLat < -90 || originLat > 90 || destLat < -90 || destLat > 90 {
+		utils.WriteError(w, http.StatusBadRequest, "latitude must be between -90 and 90")
+		return
+	}
+	if originLng < -180 || originLng > 180 || destLng < -180 || destLng > 180 {
+		utils.WriteError(w, http.StatusBadRequest, "longitude must be between -180 and 180")
+		return
+	}
+
+	radius, err := parseOptionalFloatQuery(r, "radius")
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if radius < 0 {
+		utils.WriteError(w, http.StatusBadRequest, "radius must be 0 or greater")
+		return
+	}
 	seatsNeeded, _ := strconv.Atoi(r.URL.Query().Get("seats_needed"))
 	if seatsNeeded <= 0 {
 		seatsNeeded = 1
@@ -150,6 +184,36 @@ func (h *Handler) FindNearby(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteJSON(w, http.StatusOK, rides)
+}
+
+func parseRequiredFloatQuery(r *http.Request, key string) (float64, error) {
+	raw := r.URL.Query().Get(key)
+	if raw == "" {
+		return 0, fmt.Errorf("%s is required", key)
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a valid number", key)
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("%s must be a finite number", key)
+	}
+	return v, nil
+}
+
+func parseOptionalFloatQuery(r *http.Request, key string) (float64, error) {
+	raw := r.URL.Query().Get(key)
+	if raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a valid number", key)
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("%s must be a finite number", key)
+	}
+	return v, nil
 }
 
 // GET /api/rides/:id
