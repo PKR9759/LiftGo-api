@@ -21,6 +21,14 @@ func (s *Service) Create(ctx context.Context, riderID string, req CreateRequest)
 	if req.Seats < 1 {
 		return nil, errors.New("seats must be at least 1")
 	}
+	if req.SeekID == "" {
+		if req.PickupLat == 0 && req.PickupLng == 0 {
+			return nil, errors.New("pickup_lat and pickup_lng are required when seek_id is not provided")
+		}
+		if req.DropoffLat == 0 && req.DropoffLng == 0 {
+			return nil, errors.New("dropoff_lat and dropoff_lng are required when seek_id is not provided")
+		}
+	}
 	if req.PickupLat < -90 || req.PickupLat > 90 || req.DropoffLat < -90 || req.DropoffLat > 90 {
 		return nil, errors.New("pickup_lat and dropoff_lat must be between -90 and 90")
 	}
@@ -56,8 +64,21 @@ func (s *Service) GetIncoming(ctx context.Context, driverID string) ([]*Booking,
 	return bookings, nil
 }
 
-func (s *Service) Confirm(ctx context.Context, id, driverID string) (*Booking, error) {
-	return s.repo.ConfirmBooking(ctx, id, driverID)
+func (s *Service) Confirm(ctx context.Context, id, driverID string) (*Booking, []*Booking, error) {
+	b, err := s.repo.ConfirmBooking(ctx, id, driverID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var autoCancelled []*Booking
+	if b.RideStatus == "full" {
+		autoCancelled, err = s.repo.CancelPendingBookingsOnRide(ctx, b.RideID, b.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return b, autoCancelled, nil
 }
 
 func (s *Service) Cancel(ctx context.Context, id, actorID, role string) (*Booking, error) {

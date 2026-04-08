@@ -346,7 +346,7 @@ func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 			`SELECT u.email, u.name, u.id
 			 FROM bookings b
 			 JOIN users u ON u.id = b.rider_id
-			 WHERE b.ride_id = $1 AND b.status = 'confirmed'`,
+			 WHERE b.ride_id = $1 AND b.status IN ('confirmed', 'rider_ready')`,
 			rID,
 		)
 		if err != nil {
@@ -370,16 +370,15 @@ func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 
 		if status == "active" {
 			for _, ri := range riders {
-				h.emailClient.SendDriverStartedRideToRider(ri.Email, ri.Name, driverName)
-				h.pushClient.PushDriverStartedRide(ri.ID, driverName)
+				h.pushClient.SendToUser(ri.ID, "Ride started", "Your driver has started the ride — get ready!", "/bookings")
 			}
 		} else if status == "completed" {
 			for _, ri := range riders {
-				h.emailClient.SendRideCompletedToRider(ri.Email, ri.Name, driverName)
-				h.emailClient.SendRideCompletedToDriver(driverEmail, driverName, ri.Name)
-				h.pushClient.PushRideCompleted(ri.ID)
+				h.emailClient.Send(ri.Email, "Ride completed — Leave a review", fmt.Sprintf("<p>Hi %s,</p><p>Your ride with %s is completed.</p><p>Open LiftGo to leave a review.</p>", ri.Name, driverName))
+				h.pushClient.SendToUser(ri.ID, "Ride completed", "Please rate your driver.", "/bookings")
 			}
-			h.pushClient.PushRideCompleted(drvID)
+			h.emailClient.Send(driverEmail, "Ride completed — Leave reviews", "<p>Your ride is completed. Please rate your passengers.</p>")
+			h.pushClient.SendToUser(drvID, "Ride completed", "Please rate your passengers.", "/dashboard")
 		}
 	}(req.Status, id, claims.UserID, reqID)
 
@@ -417,7 +416,7 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	// Guard: ride must be scheduled or full
 	if rideStatus != "scheduled" && rideStatus != "full" {
 		slog.Warn("cancel failed - invalid status", "request_id", reqID, "ride_id", id, "status", rideStatus)
-		utils.WriteError(w, http.StatusBadRequest, "Cannot cancel a ride that has already started.")
+		utils.WriteError(w, http.StatusConflict, "Cannot cancel an active or completed ride")
 		return
 	}
 
@@ -439,11 +438,34 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cascade: cancel all pending/confirmed bookings for this ride
-	h.db.Exec(r.Context(),
-		`UPDATE bookings SET status = 'cancelled', updated_at = now()
-		 WHERE ride_id = $1 AND status IN ('pending', 'confirmed')`, id,
-	)
+	// Cascade: cancel all pending/confirmed/rider_ready bookings for this ride and notify each passenger.
+	go func(rideID string, rqID string) {
+		ctx := context.Background()
+		rows, err := h.db.Query(ctx,
+			`UPDATE bookings b
+			 SET status = 'cancelled', updated_at = now()
+			 FROM users u
+			 WHERE b.ride_id = $1
+			   AND b.status IN ('pending', 'confirmed', 'rider_ready')
+			   AND u.id = b.rider_id
+			 RETURNING b.id, b.rider_id, u.email, u.name`,
+			rideID,
+		)
+		if err != nil {
+			slog.Error("failed to cascade-cancel bookings after ride cancel", "error", err, "ride_id", rideID, "request_id", rqID)
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var bookingID, riderID, riderEmail, riderName string
+			if err := rows.Scan(&bookingID, &riderID, &riderEmail, &riderName); err != nil {
+				continue
+			}
+			h.emailClient.Send(riderEmail, "Ride cancelled — LiftGo", fmt.Sprintf("<p>Hi %s,</p><p>Your driver cancelled this ride.</p><p>We are sorry for the inconvenience.</p>", riderName))
+			h.pushClient.SendToUser(riderID, "Ride cancelled", "Your driver cancelled the ride. Sorry for the inconvenience.", "/dashboard")
+		}
+	}(id, reqID)
 
 	slog.Info("ride cancelled successfully", "ride_id", id, "user_id", claims.UserID, "request_id", reqID)
 	h.invalidateMatchCache(r.Context())

@@ -33,6 +33,24 @@ func (c *EmailClient) getRecipient(actualEmail string) string {
 	return actualEmail
 }
 
+func (c *EmailClient) Send(recipientEmail, subject, htmlBody string) {
+	go func() {
+		params := &resend.SendEmailRequest{
+			From:    c.senderEmail,
+			To:      []string{c.getRecipient(recipientEmail)},
+			Subject: subject,
+			Html:    htmlBody,
+		}
+
+		_, err := c.resendClient.Emails.Send(params)
+		if err != nil {
+			slog.Error("Failed to send email", "error", err, "recipient_email", recipientEmail, "subject", subject)
+			return
+		}
+		slog.Info("Sent email", "recipient_email", recipientEmail, "subject", subject)
+	}()
+}
+
 func (c *EmailClient) SendNewBookingRequestToDriver(driverEmail, driverName, riderName, origin, destination string, departureTime time.Time, seats int) {
 	go func() {
 		subject := "New booking request — LiftGo"

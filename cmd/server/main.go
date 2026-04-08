@@ -75,7 +75,7 @@ func main() {
 	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
 	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)), pool, emailClient, pushClient, redisClient)
 	seekHandler := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
-	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)), pool, emailClient, pushClient, hub)
+	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)), pool, emailClient, pushClient, hub, redisClient)
 	reviewHandler := review.NewHandler(review.NewService(review.NewRepository(pool)))
 	wsHandler := ws.NewHandler(hub, pool, []byte(os.Getenv("JWT_SECRET")))
 

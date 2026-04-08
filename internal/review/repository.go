@@ -31,9 +31,13 @@ func (r *Repository) Create(ctx context.Context, reviewerID string, req CreateRe
 			SELECT 1 FROM bookings b
 			JOIN rides ri ON ri.id = b.ride_id
 			WHERE b.id = $1
-			  AND b.status IN ('confirmed','completed')
-			  AND (b.rider_id = $2 OR ri.driver_id = $2)
+			  AND b.status = 'completed'
+			  AND (
+			    (b.rider_id = $2 AND ri.driver_id = $3) OR
+			    (ri.driver_id = $2 AND b.rider_id = $3)
+			  )
 		)`, req.BookingID, reviewerID,
+		req.RevieweeID,
 	).Scan(&validBooking)
 	if err != nil {
 		slog.Error("review booking validation query failed", "error", err)
@@ -42,6 +46,9 @@ func (r *Repository) Create(ctx context.Context, reviewerID string, req CreateRe
 	if !validBooking {
 		slog.Warn("booking not eligible for review or not found", "booking_id", req.BookingID, "reviewer_id", reviewerID)
 		return nil, fmt.Errorf("booking not found or not eligible for review")
+	}
+	if reviewerID == req.RevieweeID {
+		return nil, fmt.Errorf("reviewer and reviewee cannot be the same user")
 	}
 
 	var review Review
@@ -63,13 +70,10 @@ func (r *Repository) Create(ctx context.Context, reviewerID string, req CreateRe
 
 	_, err = tx.Exec(ctx,
 		`UPDATE users
-		 SET total_reviews = total_reviews + 1,
-		     avg_rating = (
-		         SELECT ROUND(AVG(rating)::numeric, 1)
-		         FROM reviews WHERE reviewee_id = $1
-		     ),
+		 SET avg_rating = ROUND((((avg_rating * total_reviews) + $2)::numeric / NULLIF((total_reviews + 1), 0)), 1),
+		     total_reviews = total_reviews + 1,
 		     updated_at = now()
-		 WHERE id = $1`, req.RevieweeID,
+		 WHERE id = $1`, req.RevieweeID, req.Rating,
 	)
 	if err != nil {
 		slog.Error("failed to update user avg rating", "error", err, "reviewee_id", req.RevieweeID)

@@ -1,6 +1,8 @@
 package ws
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -27,12 +29,34 @@ func NewHandler(hub *Hub, db *pgxpool.Pool, jwtSecret []byte) *Handler {
 }
 
 func (h *Handler) getUserID(r *http.Request) (string, error) {
-	cookie, err := r.Cookie("access_token")
-	if err != nil {
-		return "", errors.New("missing access_token cookie")
+	if cookie, err := r.Cookie("access_token"); err == nil && cookie.Value != "" {
+		if userID, err := h.parseJWTUserID(cookie.Value); err == nil {
+			return userID, nil
+		}
 	}
-	tokenStr := cookie.Value
 
+	if token := r.URL.Query().Get("token"); token != "" {
+		if userID, err := h.parseJWTUserID(token); err == nil {
+			return userID, nil
+		}
+	}
+
+	if authHeader := r.Header.Get("Authorization"); len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+		if userID, err := h.parseJWTUserID(authHeader[7:]); err == nil {
+			return userID, nil
+		}
+	}
+
+	if refreshCookie, err := r.Cookie("refresh_token"); err == nil && refreshCookie.Value != "" {
+		if userID, err := h.getUserIDFromRefreshToken(r, refreshCookie.Value); err == nil {
+			return userID, nil
+		}
+	}
+
+	return "", errors.New("missing or invalid auth token")
+}
+
+func (h *Handler) parseJWTUserID(tokenStr string) (string, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &auth.Claims{}, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unexpected signing method")
@@ -50,6 +74,26 @@ func (h *Handler) getUserID(r *http.Request) (string, error) {
 	}
 
 	return claims.UserID, nil
+}
+
+func (h *Handler) getUserIDFromRefreshToken(r *http.Request, rawRefresh string) (string, error) {
+	hashRaw := sha256.Sum256([]byte(rawRefresh))
+	tokenHash := hex.EncodeToString(hashRaw[:])
+
+	var userID string
+	err := h.db.QueryRow(r.Context(),
+		`SELECT user_id
+		 FROM refresh_tokens
+		 WHERE token_hash = $1
+		   AND revoked = false
+		   AND expires_at > now()`,
+		tokenHash,
+	).Scan(&userID)
+	if err != nil {
+		return "", err
+	}
+
+	return userID, nil
 }
 
 func (h *Handler) DriverWS(w http.ResponseWriter, r *http.Request) {

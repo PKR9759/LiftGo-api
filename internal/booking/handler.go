@@ -5,18 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/PKR9759/LiftGo-api/internal/auth"
+	"github.com/PKR9759/LiftGo-api/internal/cache"
 	customMiddleware "github.com/PKR9759/LiftGo-api/internal/middleware"
 	"github.com/PKR9759/LiftGo-api/internal/notification"
 	"github.com/PKR9759/LiftGo-api/internal/utils"
 	"github.com/PKR9759/LiftGo-api/internal/ws"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 type Handler struct {
@@ -25,16 +28,30 @@ type Handler struct {
 	emailClient *notification.EmailClient
 	pushClient  *notification.PushClient
 	hub         *ws.Hub
+	rdb         *redis.Client
 }
 
-func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.EmailClient, pushClient *notification.PushClient, hub *ws.Hub) *Handler {
+func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.EmailClient, pushClient *notification.PushClient, hub *ws.Hub, rdb *redis.Client) *Handler {
 	return &Handler{
 		service:     service,
 		db:          db,
 		emailClient: emailClient,
 		pushClient:  pushClient,
 		hub:         hub,
+		rdb:         rdb,
 	}
+}
+
+func (h *Handler) invalidateMatchCache(ctx context.Context) {
+	if h.rdb == nil || os.Getenv("USE_CACHE") != "true" {
+		return
+	}
+	n, err := cache.InvalidatePattern(ctx, h.rdb, "match:*")
+	if err != nil {
+		slog.Warn("match cache invalidation error", "error", err)
+		return
+	}
+	slog.Info("match cache invalidated", "keys_deleted", n)
 }
 
 func (h *Handler) broadcastStatusUpdate(bookingID string) {
@@ -67,7 +84,17 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			utils.WriteError(w, http.StatusConflict, err.Error())
 			return
 		}
-		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		msg := err.Error()
+		switch {
+		case msg == "you cannot book your own ride":
+			utils.WriteError(w, http.StatusForbidden, msg)
+		case msg == "you already have an active booking on this ride" || msg == "you already have a booking on this ride":
+			utils.WriteError(w, http.StatusConflict, msg)
+		case len(msg) > 16 && msg[:16] == "ride is already ":
+			utils.WriteError(w, http.StatusConflict, msg)
+		default:
+			utils.WriteError(w, http.StatusBadRequest, msg)
+		}
 		return
 	}
 
@@ -80,20 +107,18 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			slog.Error("Failed to fetch driver email for new booking notification", "error", err, "booking_id", b.ID, "request_id", reqID)
 			return
 		}
-		h.emailClient.SendNewBookingRequestToDriver(
+
+		departure := b.DepartureAt.Format("02 Jan 2006 03:04 PM")
+		h.emailClient.Send(
 			driverEmail,
-			b.DriverName,
-			b.RiderName,
-			b.OriginLabel,
-			b.DestLabel,
-			b.DepartureAt,
-			b.Seats,
+			"New booking request — LiftGo",
+			fmt.Sprintf("<p>Hi %s,</p><p><strong>%s</strong> requested <strong>%d</strong> seat(s).</p><p>Pickup: %s</p><p>Departure: %s</p><p>Ride ID: %s</p><p>Open LiftGo to accept or reject.</p>", b.DriverName, b.RiderName, b.Seats, b.OriginLabel, departure, b.RideID),
 		)
-		h.pushClient.PushNewBookingRequest(
+		h.pushClient.SendToUser(
 			b.DriverID,
-			b.RiderName,
-			b.OriginLabel,
-			b.DestLabel,
+			"New booking request",
+			fmt.Sprintf("%s requested %d seat(s). Pickup %s", b.RiderName, b.Seats, b.OriginLabel),
+			"/rides/"+b.RideID+"/manage",
 		)
 	}(booking, reqID)
 
@@ -155,37 +180,68 @@ func (h *Handler) Confirm(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("Handler.Confirm booking entry", "request_id", reqID, "booking_id", id)
 
-	booking, err := h.service.Confirm(r.Context(), id, claims.UserID)
+	booking, autoCancelled, err := h.service.Confirm(r.Context(), id, claims.UserID)
 	if err != nil {
 		slog.Error("Confirm booking failed", "error", err, "request_id", reqID)
-		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		msg := err.Error()
+		switch {
+		case msg == "booking not found or not authorised":
+			utils.WriteError(w, http.StatusForbidden, msg)
+		case len(msg) > 19 && msg[:19] == "booking is already ":
+			utils.WriteError(w, http.StatusConflict, msg)
+		case msg == "not enough seats to confirm this booking" || msg == "booking is no longer pending":
+			utils.WriteError(w, http.StatusConflict, msg)
+		default:
+			utils.WriteError(w, http.StatusBadRequest, msg)
+		}
 		return
 	}
 
 	slog.Info("booking confirmed successfully", "booking_id", id, "user_id", claims.UserID, "request_id", reqID)
 
-	go func(b *Booking, reqID string) {
+	go func(b *Booking, cancelled []*Booking, reqID string) {
 		var riderEmail string
+		var driverRating float64
 		err := h.db.QueryRow(context.Background(), "SELECT email FROM users WHERE id = $1", b.RiderID).Scan(&riderEmail)
 		if err != nil {
 			slog.Error("Failed to fetch rider email for confirmed notification", "error", err, "booking_id", b.ID, "request_id", reqID)
 			return
 		}
-		h.emailClient.SendBookingConfirmedToRider(
+
+		_ = h.db.QueryRow(context.Background(), "SELECT avg_rating FROM users WHERE id = $1", b.DriverID).Scan(&driverRating)
+		departure := b.DepartureAt.Format("02 Jan 2006 03:04 PM")
+		h.emailClient.Send(
 			riderEmail,
-			b.RiderName,
-			b.DriverName,
-			b.OriginLabel,
-			b.DestLabel,
-			b.DepartureAt,
+			"Your booking is confirmed — LiftGo",
+			fmt.Sprintf("<p>Hi %s,</p><p>Your booking is confirmed.</p><p>Driver: %s (rating %.1f)</p><p>Route: %s to %s</p><p>Departure: %s</p><p>Pickup: %s</p><p>Total: ₹%.2f</p><p><a href=\"/rides/%s\">Open ride details</a></p>", b.RiderName, b.DriverName, driverRating, b.OriginLabel, b.DestLabel, departure, b.OriginLabel, b.TotalPrice, b.RideID),
 		)
-		h.pushClient.PushBookingConfirmed(
+		h.pushClient.SendToUser(
 			b.RiderID,
-			b.DriverName,
-			b.OriginLabel,
-			b.DestLabel,
+			"Your booking is confirmed",
+			fmt.Sprintf("%s confirmed your booking. Pickup %s", b.DriverName, b.OriginLabel),
+			"/bookings/"+b.ID,
 		)
-	}(booking, reqID)
+
+		for _, cb := range cancelled {
+			var cancelEmail string
+			if err := h.db.QueryRow(context.Background(), "SELECT email FROM users WHERE id = $1", cb.RiderID).Scan(&cancelEmail); err != nil {
+				continue
+			}
+			h.emailClient.Send(
+				cancelEmail,
+				"Booking not accepted — ride is full",
+				fmt.Sprintf("<p>Hi %s,</p><p>Your pending booking for %s to %s was cancelled because the ride is now full.</p><p>Please search for another ride in LiftGo.</p>", cb.RiderName, cb.OriginLabel, cb.DestLabel),
+			)
+			h.pushClient.SendToUser(
+				cb.RiderID,
+				"Ride is full",
+				"Your pending booking was not accepted because all seats are taken.",
+				"/dashboard",
+			)
+		}
+	}(booking, autoCancelled, reqID)
+
+	h.invalidateMatchCache(r.Context())
 
 	h.broadcastStatusUpdate(id)
 	utils.WriteJSON(w, http.StatusOK, booking)
@@ -199,40 +255,38 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Handler.Cancel booking entry", "request_id", reqID, "booking_id", id)
 
 	// Fetch booking + ride info for guards
-	var bookingStatus, rideStatus, rideDriverID string
+	var bookingStatus, rideDriverID, riderID string
 	var departureAt time.Time
 	err := h.db.QueryRow(r.Context(),
-		`SELECT b.status, ri.status, ri.driver_id, ri.departure_at
+		`SELECT b.status, b.rider_id, ri.driver_id, ri.departure_at
 		 FROM bookings b JOIN rides ri ON ri.id = b.ride_id
 		 WHERE b.id = $1`, id,
-	).Scan(&bookingStatus, &rideStatus, &rideDriverID, &departureAt)
+	).Scan(&bookingStatus, &riderID, &rideDriverID, &departureAt)
 	if err != nil {
 		slog.Error("booking not found for cancelation", "error", err, "request_id", reqID)
 		utils.WriteError(w, http.StatusNotFound, "booking not found")
 		return
 	}
 
-	// Determine actual role
+	if claims.UserID != rideDriverID && claims.UserID != riderID {
+		utils.WriteError(w, http.StatusForbidden, "only the rider or ride driver can cancel this booking")
+		return
+	}
+
 	role := "rider"
 	if rideDriverID == claims.UserID {
 		role = "driver"
 	}
 
 	// Guard 1: booking status must allow cancellation
-	if bookingStatus != "pending" && bookingStatus != "confirmed" {
-		utils.WriteError(w, http.StatusBadRequest, "This booking cannot be cancelled at this stage.")
+	if bookingStatus != "pending" && bookingStatus != "confirmed" && bookingStatus != "rider_ready" {
+		utils.WriteError(w, http.StatusConflict, "This booking cannot be cancelled at this stage.")
 		return
 	}
 
-	// Guard 2: ride must not be active or completed
-	if rideStatus == "active" || rideStatus == "completed" {
-		utils.WriteError(w, http.StatusBadRequest, "Cannot cancel a ride that is already in progress.")
-		return
-	}
-
-	// Guard 3: time guard — only for confirmed bookings
+	// Guard 2: time guard — only for confirmed bookings
 	if bookingStatus == "confirmed" && time.Until(departureAt) < time.Hour {
-		utils.WriteError(w, http.StatusBadRequest, "Confirmed bookings cannot be cancelled within 1 hour of departure.")
+		utils.WriteError(w, http.StatusConflict, "Cannot cancel within 1 hour of departure")
 		return
 	}
 
@@ -265,18 +319,18 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		h.emailClient.SendBookingCancelled(
-			recipientEmail,
-			recipientName,
-			cancelledByName,
-			b.OriginLabel,
-			b.DestLabel,
-		)
-		h.pushClient.PushBookingCancelled(
-			recipientID,
-			cancelledByName,
-		)
+		subject := "Booking cancelled — LiftGo"
+		body := fmt.Sprintf("<p>Hi %s,</p><p>%s cancelled the booking for %s to %s.</p><p>Please open LiftGo for alternatives.</p>", recipientName, cancelledByName, b.OriginLabel, b.DestLabel)
+		if isDriverCancelling {
+			subject = "Driver cancelled your booking — LiftGo"
+			body = fmt.Sprintf("<p>Hi %s,</p><p>Your driver %s cancelled the booking for %s to %s.</p><p>Sorry for the inconvenience. Please search for another ride.</p>", recipientName, cancelledByName, b.OriginLabel, b.DestLabel)
+		}
+
+		h.emailClient.Send(recipientEmail, subject, body)
+		h.pushClient.SendToUser(recipientID, "Booking cancelled", fmt.Sprintf("%s cancelled the booking", cancelledByName), "/bookings")
 	}(booking, reqID, claims.UserID)
+
+	h.invalidateMatchCache(r.Context())
 
 	h.broadcastStatusUpdate(id)
 	utils.WriteJSON(w, http.StatusOK, booking)
@@ -318,17 +372,26 @@ func (h *Handler) RiderReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if b.RiderID != claims.UserID {
-		utils.WriteError(w, http.StatusUnauthorized, "only rider can mark ready")
+		utils.WriteError(w, http.StatusForbidden, "only rider can mark ready")
 		return
 	}
 	if b.Status != "confirmed" {
-		utils.WriteError(w, http.StatusBadRequest, "booking must be confirmed")
+		utils.WriteError(w, http.StatusConflict, fmt.Sprintf("Booking is already %s", b.Status))
 		return
 	}
-	importTime := time.Now()
-	guardTime := b.DepartureAt.Add(-15 * time.Minute)
-	if importTime.Before(guardTime) {
-		utils.WriteError(w, http.StatusBadRequest, "Too early — you can mark ready 15 minutes before departure")
+	now := time.Now()
+	guardTime := b.DepartureAt.Add(-30 * time.Minute)
+	if now.Before(guardTime) {
+		utils.WriteError(w, http.StatusConflict, "Too early — you can mark ready within 30 minutes of departure")
+		return
+	}
+
+	if body.RiderLat == nil || body.RiderLng == nil {
+		utils.WriteError(w, http.StatusBadRequest, "rider_lat and rider_lng are required")
+		return
+	}
+	if *body.RiderLat < -90 || *body.RiderLat > 90 || *body.RiderLng < -180 || *body.RiderLng > 180 {
+		utils.WriteError(w, http.StatusBadRequest, "invalid coordinates")
 		return
 	}
 
@@ -341,7 +404,12 @@ func (h *Handler) RiderReady(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("rider successfully marked ready", "booking_id", id, "request_id", reqID)
 
-	go h.pushClient.PushRiderReady(booking.DriverID, booking.RiderName)
+	go h.pushClient.SendToUser(
+		booking.DriverID,
+		"Passenger is ready",
+		fmt.Sprintf("%s is ready at %.5f, %.5f", booking.RiderName, *booking.RiderReadyLat, *booking.RiderReadyLng),
+		"/rides/"+booking.RideID+"/manage",
+	)
 
 	h.broadcastStatusUpdate(id)
 	utils.WriteJSON(w, http.StatusOK, booking)
@@ -365,15 +433,19 @@ func (h *Handler) StartRide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if driverID != claims.UserID {
-		utils.WriteError(w, http.StatusUnauthorized, "only driver can start the ride")
+		utils.WriteError(w, http.StatusForbidden, "only driver can start the ride")
 		return
 	}
 	if currentStatus != "scheduled" && currentStatus != "full" {
-		utils.WriteError(w, http.StatusBadRequest, "ride must be scheduled or full")
+		utils.WriteError(w, http.StatusConflict, fmt.Sprintf("ride is already %s", currentStatus))
 		return
 	}
 	if time.Now().Before(departure.Add(-30 * time.Minute)) {
-		utils.WriteError(w, http.StatusBadRequest, "Too early — you can start the ride 30 minutes before scheduled time")
+		utils.WriteError(w, http.StatusConflict, "Too early — you can start the ride 30 minutes before scheduled time")
+		return
+	}
+	if time.Now().After(departure.Add(60 * time.Minute)) {
+		utils.WriteError(w, http.StatusConflict, "Cannot start a ride more than 60 minutes after departure")
 		return
 	}
 
@@ -386,7 +458,7 @@ func (h *Handler) StartRide(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("ride officially started", "ride_id", rideID, "request_id", reqID)
 
-	go func(rID string, dName string, rqID string) {
+	go func(rID string, driverID string, rqID string) {
 		rows, err := h.db.Query(context.Background(), "SELECT b.id, u.id, u.name FROM bookings b JOIN users u ON u.id = b.rider_id WHERE b.ride_id = $1 AND b.status IN ('confirmed', 'rider_ready')", rID)
 		if err != nil {
 			slog.Error("Failed to fetch confirmed riders for start notification", "error", err, "request_id", rqID)
@@ -397,10 +469,12 @@ func (h *Handler) StartRide(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var bID, riderUID, rName string
 			rows.Scan(&bID, &riderUID, &rName)
-			h.pushClient.PushDriverStartedRide(riderUID, dName)
+			h.pushClient.SendToUser(riderUID, "Ride started", "Your driver has started the ride — get ready!", "/bookings/"+bID)
 			h.broadcastStatusUpdate(bID)
 		}
 	}(rideID, claims.UserID, reqID)
+
+	h.invalidateMatchCache(r.Context())
 
 	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "ride started"})
 }
@@ -419,8 +493,20 @@ func (h *Handler) PickedUp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	b, err := h.service.GetByID(r.Context(), id)
-	if err != nil || b.DriverID != claims.UserID || b.RideStatus != "active" || (b.Status != "confirmed" && b.Status != "rider_ready") {
-		utils.WriteError(w, http.StatusBadRequest, "invalid booking or ride state")
+	if err != nil {
+		utils.WriteError(w, http.StatusNotFound, "booking not found")
+		return
+	}
+	if b.DriverID != claims.UserID {
+		utils.WriteError(w, http.StatusForbidden, "only the ride driver can mark picked up")
+		return
+	}
+	if b.RideStatus != "active" {
+		utils.WriteError(w, http.StatusConflict, "Start the ride before marking passengers as picked up")
+		return
+	}
+	if b.Status != "confirmed" && b.Status != "rider_ready" {
+		utils.WriteError(w, http.StatusConflict, fmt.Sprintf("Booking is already %s", b.Status))
 		return
 	}
 
@@ -440,7 +526,7 @@ func (h *Handler) PickedUp(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("rider marked as picked up", "booking_id", id, "request_id", reqID)
 
-	go h.pushClient.PushDriverPickedUp(booking.RiderID)
+	go h.pushClient.SendToUser(booking.RiderID, "Picked up", "You've been picked up — enjoy your ride!", "/bookings/"+booking.ID)
 
 	h.broadcastStatusUpdate(id)
 	utils.WriteJSON(w, http.StatusOK, booking)
@@ -454,8 +540,16 @@ func (h *Handler) Dropped(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Handler.Dropped entry", "request_id", reqID, "booking_id", id)
 
 	b, err := h.service.GetByID(r.Context(), id)
-	if err != nil || b.DriverID != claims.UserID || b.Status != "picked_up" {
-		utils.WriteError(w, http.StatusBadRequest, "invalid booking or ride state")
+	if err != nil {
+		utils.WriteError(w, http.StatusNotFound, "booking not found")
+		return
+	}
+	if b.DriverID != claims.UserID {
+		utils.WriteError(w, http.StatusForbidden, "only the ride driver can mark dropped off")
+		return
+	}
+	if b.Status != "picked_up" {
+		utils.WriteError(w, http.StatusConflict, fmt.Sprintf("Booking is already %s", b.Status))
 		return
 	}
 
@@ -469,18 +563,19 @@ func (h *Handler) Dropped(w http.ResponseWriter, r *http.Request) {
 	slog.Info("rider successfully dropped", "booking_id", id, "overall_ride_completed", completed, "request_id", reqID)
 
 	go func(b *Booking, isCompleted bool, rqID string) {
-		h.pushClient.PushRideCompleted(b.RiderID)
+		h.pushClient.SendToUser(b.RiderID, "Arrived", "You've arrived at your destination. Please rate your driver.", "/bookings/"+b.ID)
 		var riderEmail, driverEmail string
 		h.db.QueryRow(context.Background(), "SELECT email FROM users WHERE id = $1", b.RiderID).Scan(&riderEmail)
 		h.db.QueryRow(context.Background(), "SELECT email FROM users WHERE id = $1", b.DriverID).Scan(&driverEmail)
-
-		h.emailClient.SendRideCompletedToRider(riderEmail, b.RiderName, b.DriverName)
+		h.emailClient.Send(riderEmail, "Trip completed — LiftGo", fmt.Sprintf("<p>Hi %s,</p><p>You have arrived at your destination.</p><p><a href=\"/bookings/%s\">Please rate your driver</a>.</p>", b.RiderName, b.ID))
 
 		if isCompleted {
-			h.emailClient.SendRideCompletedToDriver(driverEmail, b.DriverName, b.RiderName)
-			h.pushClient.PushRideCompleted(b.DriverID)
+			h.emailClient.Send(driverEmail, "Ride completed — Leave a review", fmt.Sprintf("<p>Hi %s,</p><p>Your ride is completed.</p><p><a href=\"/bookings/%s\">Please rate your passenger</a>.</p>", b.DriverName, b.ID))
+			h.pushClient.SendToUser(b.DriverID, "Ride completed", "Ride completed. Please leave a review for your passenger.", "/bookings/"+b.ID)
 		}
 	}(booking, completed, reqID)
+
+	h.invalidateMatchCache(r.Context())
 
 	h.broadcastStatusUpdate(id)
 	utils.WriteJSON(w, http.StatusOK, booking)
@@ -494,13 +589,25 @@ func (h *Handler) NoShow(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Handler.NoShow entry", "request_id", reqID, "booking_id", id)
 
 	b, err := h.service.GetByID(r.Context(), id)
-	if err != nil || b.DriverID != claims.UserID || b.RideStatus != "active" || (b.Status != "confirmed" && b.Status != "rider_ready") {
-		utils.WriteError(w, http.StatusBadRequest, "invalid booking or ride state")
+	if err != nil {
+		utils.WriteError(w, http.StatusNotFound, "booking not found")
+		return
+	}
+	if b.DriverID != claims.UserID {
+		utils.WriteError(w, http.StatusForbidden, "only the ride driver can mark no-show")
+		return
+	}
+	if b.RideStatus != "active" {
+		utils.WriteError(w, http.StatusConflict, "ride must be active to mark no-show")
+		return
+	}
+	if b.Status != "confirmed" && b.Status != "rider_ready" {
+		utils.WriteError(w, http.StatusConflict, fmt.Sprintf("Booking is already %s", b.Status))
 		return
 	}
 
 	if time.Now().Before(b.DepartureAt.Add(10 * time.Minute)) {
-		utils.WriteError(w, http.StatusBadRequest, "You can only mark no-show 10 minutes after the scheduled departure time")
+		utils.WriteError(w, http.StatusConflict, "Cannot mark no-show until 10 minutes after departure time")
 		return
 	}
 
@@ -514,14 +621,19 @@ func (h *Handler) NoShow(w http.ResponseWriter, r *http.Request) {
 	slog.Info("rider marked as no_show", "booking_id", id, "overall_ride_completed", completed, "request_id", reqID)
 
 	go func(b *Booking, isCompleted bool, rqID string) {
-		h.pushClient.PushNoShow(b.RiderID)
+		h.pushClient.SendToUser(b.RiderID, "Marked no-show", "You were marked as a no-show for your ride", "/bookings/"+b.ID)
+		var riderEmail string
+		h.db.QueryRow(context.Background(), "SELECT email FROM users WHERE id = $1", b.RiderID).Scan(&riderEmail)
+		h.emailClient.Send(riderEmail, "No-show marked — LiftGo", "<p>You were marked as a no-show for your ride.</p>")
 		if isCompleted {
 			var driverEmail string
 			h.db.QueryRow(context.Background(), "SELECT email FROM users WHERE id = $1", b.DriverID).Scan(&driverEmail)
-			h.emailClient.SendRideCompletedToDriver(driverEmail, b.DriverName, b.RiderName)
-			h.pushClient.PushRideCompleted(b.DriverID)
+			h.emailClient.Send(driverEmail, "Ride completed — Leave a review", fmt.Sprintf("<p>Hi %s,</p><p>Your ride is completed.</p><p><a href=\"/bookings/%s\">Leave a review</a>.</p>", b.DriverName, b.ID))
+			h.pushClient.SendToUser(b.DriverID, "Ride completed", "Ride completed. Please leave a review.", "/bookings/"+b.ID)
 		}
 	}(booking, completed, reqID)
+
+	h.invalidateMatchCache(r.Context())
 
 	h.broadcastStatusUpdate(id)
 	utils.WriteJSON(w, http.StatusOK, booking)

@@ -446,7 +446,7 @@ func (r *Repository) UpdateStatus(ctx context.Context, id, driverID, status stri
 func (r *Repository) Cancel(ctx context.Context, id, driverID string) error {
 	result, err := r.db.Exec(ctx,
 		`UPDATE rides SET status = 'cancelled', updated_at = now()
-		 WHERE id = $1 AND driver_id = $2 AND status IN ('scheduled', 'active')`,
+		 WHERE id = $1 AND driver_id = $2 AND status IN ('scheduled', 'full')`,
 		id, driverID,
 	)
 	if err != nil {
