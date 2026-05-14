@@ -10,7 +10,6 @@ type Booking struct {
 	RiderName       string     `json:"rider_name"`
 	DriverID        string     `json:"driver_id"`
 	DriverName      string     `json:"driver_name"`
-	SeekID          *string    `json:"seek_id,omitempty"`
 	OriginLabel     string     `json:"origin_label"`
 	DestLabel       string     `json:"dest_label"`
 	DepartureAt     time.Time  `json:"departure_at"`
@@ -45,7 +44,6 @@ type BookingWithRiderInfo struct {
 
 type CreateRequest struct {
 	RideID     string  `json:"ride_id"`
-	SeekID     string  `json:"seek_id"`
 	Seats      int     `json:"seats"`
 	PickupLat  float64 `json:"pickup_lat"`
 	PickupLng  float64 `json:"pickup_lng"`

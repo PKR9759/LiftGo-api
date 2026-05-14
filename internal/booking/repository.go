@@ -78,18 +78,6 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		return nil, fmt.Errorf("you already have an active booking on this ride")
 	}
 
-	if req.SeekID != "" {
-		err = tx.QueryRow(ctx,
-			`SELECT origin_lat, origin_lng, dest_lat, dest_lng
-			 FROM seeks
-			 WHERE id = $1 AND rider_id = $2`,
-			req.SeekID, riderID,
-		).Scan(&req.PickupLat, &req.PickupLng, &req.DropoffLat, &req.DropoffLng)
-		if err != nil {
-			return nil, fmt.Errorf("invalid seek_id for this rider")
-		}
-	}
-
 	// Step B — Compute pickup/dropoff fractions. If route geometry is missing,
 	// fallback to full-route occupancy checks.
 	pickupFraction, dropoffFraction := 0.0, 1.0
@@ -137,18 +125,13 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 	segmentPricePerSeat := roundMoney(pricePerSeat * coverage)
 	totalPrice := roundMoney(segmentPricePerSeat * float64(req.Seats))
 
-	var seekID *string
-	if req.SeekID != "" {
-		seekID = &req.SeekID
-	}
-
 	// Step D — Store fractions in the booking row
 	var bookingID, status string
 	err = tx.QueryRow(ctx,
-		`INSERT INTO bookings (ride_id, rider_id, seek_id, seats, total_price, pickup_fraction, dropoff_fraction)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO bookings (ride_id, rider_id, seats, total_price, pickup_fraction, dropoff_fraction)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id, status`,
-		req.RideID, riderID, seekID, req.Seats, totalPrice, pickupFraction, dropoffFraction,
+		req.RideID, riderID, req.Seats, totalPrice, pickupFraction, dropoffFraction,
 	).Scan(&bookingID, &status)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -157,15 +140,6 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		}
 		slog.Error("insert booking query failed", "error", err)
 		return nil, err
-	}
-
-	// Update seek if present
-	if seekID != nil {
-		_, err = tx.Exec(ctx, `UPDATE seeks SET status = 'matched', updated_at = now() WHERE id = $1`, seekID)
-		if err != nil {
-			slog.Error("failed to update seek status", "error", err, "seek_id", *seekID)
-			return nil, err
-		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -183,7 +157,6 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Booking, error) {
 	err := r.db.QueryRow(ctx,
 		`SELECT b.id, b.ride_id, b.rider_id, ur.name,
 		        ri.driver_id, ud.name,
-		        b.seek_id,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
 		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
 		        b.picked_up_at, b.dropped_at,
@@ -198,7 +171,6 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Booking, error) {
 	).Scan(
 		&b.ID, &b.RideID, &b.RiderID, &b.RiderName,
 		&b.DriverID, &b.DriverName,
-		&b.SeekID,
 		&b.OriginLabel, &b.DestLabel, &b.DepartureAt,
 		&b.Seats, &b.Status, &b.RideStatus, &b.TotalPrice, &ridePricePerSeat, &b.CreatedAt,
 		&b.PickedUpAt, &b.DroppedAt,
@@ -217,7 +189,6 @@ func (r *Repository) GetByRider(ctx context.Context, riderID string) ([]*Booking
 	rows, err := r.db.Query(ctx,
 		`SELECT b.id, b.ride_id, b.rider_id, ur.name,
 		        ri.driver_id, ud.name,
-		        b.seek_id,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
 		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
 		        b.picked_up_at, b.dropped_at,
@@ -243,7 +214,6 @@ func (r *Repository) GetIncoming(ctx context.Context, driverID string) ([]*Booki
 	rows, err := r.db.Query(ctx,
 		`SELECT b.id, b.ride_id, b.rider_id, ur.name,
 		        ri.driver_id, ud.name,
-		        b.seek_id,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
 		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
 		        b.picked_up_at, b.dropped_at,
@@ -454,15 +424,14 @@ func (r *Repository) GetRideBookingsWithRiderInfo(ctx context.Context, rideID, d
 	rows, err := r.db.Query(ctx,
 		`SELECT b.id, b.ride_id, b.rider_id, ur.name,
 		        ri.driver_id, ud.name,
-		        b.seek_id,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
 		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
 		        b.picked_up_at, b.dropped_at,
 		        ur.avg_rating,
-		        COALESCE(s.origin_lat, ri.origin_lat) AS rider_origin_lat,
-		        COALESCE(s.origin_lng, ri.origin_lng) AS rider_origin_lng,
-		        COALESCE(s.dest_lat, ri.dest_lat)     AS rider_dest_lat,
-		        COALESCE(s.dest_lng, ri.dest_lng)     AS rider_dest_lng,
+		        ri.origin_lat AS rider_origin_lat,
+		        ri.origin_lng AS rider_origin_lng,
+		        ri.dest_lat     AS rider_dest_lat,
+		        ri.dest_lng     AS rider_dest_lng,
 		        b.rider_ready_lat, b.rider_ready_lng,
 		        COALESCE(b.pickup_fraction, 0) AS pickup_fraction,
 		        COALESCE(b.dropoff_fraction, 0) AS dropoff_fraction
@@ -470,7 +439,6 @@ func (r *Repository) GetRideBookingsWithRiderInfo(ctx context.Context, rideID, d
 		 JOIN users  ur ON ur.id = b.rider_id
 		 JOIN rides  ri ON ri.id = b.ride_id
 		 JOIN users  ud ON ud.id = ri.driver_id
-		 LEFT JOIN seeks s ON s.id = b.seek_id
 		 WHERE b.ride_id = $1 AND ri.driver_id = $2
 		 ORDER BY b.created_at ASC`,
 		rideID, driverID,
@@ -488,7 +456,6 @@ func (r *Repository) GetRideBookingsWithRiderInfo(ctx context.Context, rideID, d
 		err := rows.Scan(
 			&bi.ID, &bi.RideID, &bi.RiderID, &bi.RiderName,
 			&bi.DriverID, &bi.DriverName,
-			&bi.SeekID,
 			&bi.OriginLabel, &bi.DestLabel, &bi.DepartureAt,
 			&bi.Seats, &bi.Status, &bi.RideStatus, &bi.TotalPrice, &ridePricePerSeat, &bi.CreatedAt,
 			&bi.PickedUpAt, &bi.DroppedAt,
@@ -514,14 +481,13 @@ func (r *Repository) CheckDriverLocation(ctx context.Context, bookingID string, 
 		`SELECT ST_DWithin(
 			ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
 			ST_SetSRID(ST_MakePoint(
-				COALESCE(s.origin_lng, ri.origin_lng),
-				COALESCE(s.origin_lat, ri.origin_lat)
+				ri.origin_lng,
+				ri.origin_lat
 			), 4326)::geography,
 			200
 		) 
 		FROM bookings b
 		JOIN rides ri ON ri.id = b.ride_id
-		LEFT JOIN seeks s ON s.id = b.seek_id
 		WHERE b.id = $3`,
 		driverLng, driverLat, bookingID,
 	).Scan(&isWithin)
@@ -745,7 +711,6 @@ func scanBookings(rows interface {
 		err := rows.Scan(
 			&b.ID, &b.RideID, &b.RiderID, &b.RiderName,
 			&b.DriverID, &b.DriverName,
-			&b.SeekID,
 			&b.OriginLabel, &b.DestLabel, &b.DepartureAt,
 			&b.Seats, &b.Status, &b.RideStatus, &b.TotalPrice, &ridePricePerSeat, &b.CreatedAt,
 			&b.PickedUpAt, &b.DroppedAt,

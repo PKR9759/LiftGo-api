@@ -21,13 +21,11 @@ func (s *Service) Create(ctx context.Context, riderID string, req CreateRequest)
 	if req.Seats < 1 {
 		return nil, errors.New("seats must be at least 1")
 	}
-	if req.SeekID == "" {
-		if req.PickupLat == 0 && req.PickupLng == 0 {
-			return nil, errors.New("pickup_lat and pickup_lng are required when seek_id is not provided")
-		}
-		if req.DropoffLat == 0 && req.DropoffLng == 0 {
-			return nil, errors.New("dropoff_lat and dropoff_lng are required when seek_id is not provided")
-		}
+	if req.PickupLat == 0 && req.PickupLng == 0 {
+		return nil, errors.New("pickup_lat and pickup_lng are required")
+	}
+	if req.DropoffLat == 0 && req.DropoffLng == 0 {
+		return nil, errors.New("dropoff_lat and dropoff_lng are required")
 	}
 	if req.PickupLat < -90 || req.PickupLat > 90 || req.DropoffLat < -90 || req.DropoffLat > 90 {
 		return nil, errors.New("pickup_lat and dropoff_lat must be between -90 and 90")

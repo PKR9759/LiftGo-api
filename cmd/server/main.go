@@ -22,7 +22,6 @@ import (
 	"github.com/PKR9759/LiftGo-api/internal/notification"
 	"github.com/PKR9759/LiftGo-api/internal/review"
 	"github.com/PKR9759/LiftGo-api/internal/ride"
-	"github.com/PKR9759/LiftGo-api/internal/seek"
 	"github.com/PKR9759/LiftGo-api/internal/user"
 	"github.com/PKR9759/LiftGo-api/internal/ws"
 )
@@ -74,7 +73,6 @@ func main() {
 	authHandler := auth.NewHandler(auth.NewService(pool))
 	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
 	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)), pool, emailClient, pushClient, hub, redisClient)
-	seekHandler := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
 	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)), pool, emailClient, pushClient, hub, redisClient)
 	reviewHandler := review.NewHandler(review.NewService(review.NewRepository(pool)))
 	wsHandler := ws.NewHandler(hub, pool, []byte(os.Getenv("JWT_SECRET")))
@@ -192,16 +190,6 @@ func main() {
 			r.Get("/{id}/bookings", bookingHandler.GetRideBookings)
 			r.Put("/{id}/start-ride", bookingHandler.StartRide)
 			r.Get("/{id}/status-summary", rideHandler.GetStatusSummary)
-		})
-
-		// ── seeks ─────────────────────────────────────────────────
-		r.With(auth.PopulateUser).Get("/api/seeks/nearby", seekHandler.FindNearby)
-		r.Route("/api/seeks", func(r chi.Router) {
-			r.Use(auth.RequireAuth)
-			r.Post("/", seekHandler.Create)
-			r.Get("/mine", seekHandler.GetMine)
-			r.Get("/{id}", seekHandler.GetByID)
-			r.Delete("/{id}", seekHandler.Cancel)
 		})
 
 		// ── bookings ──────────────────────────────────────────────
