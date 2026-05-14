@@ -100,17 +100,6 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Make sure to aggressively clear the old path-restricted cookie just in case
-	domain := os.Getenv("COOKIE_DOMAIN")
-	http.SetCookie(w, &http.Cookie{
-		Name:     "refresh_token",
-		Value:    "",
-		HttpOnly: true,
-		Domain:   domain,
-		Path:     "/api/auth/refresh",
-		MaxAge:   -1,
-	})
-
 	setAuthCookies(w, validResp.AccessToken, validResp.RefreshToken)
 	slog.Info("session refreshed successfully", "user_id", validResp.User.ID, "request_id", reqID)
 	utils.WriteJSON(w, http.StatusOK, validResp)

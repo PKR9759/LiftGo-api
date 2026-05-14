@@ -8,6 +8,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/PKR9759/LiftGo-api/internal/audit"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -166,6 +167,14 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		return nil, err
 	}
 
+	audit.Log(ctx, tx, "booking", bookingID, riderID, "created", nil, map[string]any{
+		"ride_id":          req.RideID,
+		"seats":            req.Seats,
+		"total_price":      totalPrice,
+		"pickup_fraction":  pickupFraction,
+		"dropoff_fraction": dropoffFraction,
+	})
+
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("commit create booking failed", "error", err)
 		return nil, err
@@ -285,6 +294,7 @@ func (r *Repository) UpdateStatus(ctx context.Context, id, actorID, newStatus, r
 		return nil, fmt.Errorf("booking not found or not authorised")
 	}
 
+	audit.Log(ctx, r.db, "booking", returnedID, actorID, "status_changed", nil, map[string]string{"status": newStatus})
 	slog.Info("booking status updated in db", "booking_id", returnedID, "new_status", newStatus)
 	return r.GetByID(ctx, returnedID)
 }
@@ -363,6 +373,8 @@ func (r *Repository) ConfirmBooking(ctx context.Context, id, driverID string) (*
 		return nil, err
 	}
 
+	audit.Log(ctx, tx, "booking", returnedID, driverID, "confirmed", nil, map[string]string{"status": "confirmed"})
+
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("commit confirm booking failed", "error", err)
 		return nil, err
@@ -435,6 +447,8 @@ func (r *Repository) CancelBooking(ctx context.Context, id, actorID, role string
 			return nil, err
 		}
 	}
+
+	audit.Log(ctx, tx, "booking", returnedID, actorID, "cancelled", map[string]string{"old_status": currentStatus}, map[string]string{"status": "cancelled"})
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err

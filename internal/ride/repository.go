@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PKR9759/LiftGo-api/internal/audit"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -140,6 +141,14 @@ func (r *Repository) Create(ctx context.Context, driverID string, req CreateRequ
 		}
 		slog.Info("Ride created with straight-line fallback", "ride_id", ride.ID, "status", ride.Status)
 	}
+
+	audit.Log(ctx, r.db, "ride", ride.ID, driverID, "created", nil, map[string]any{
+		"origin_label":   req.OriginLabel,
+		"dest_label":     req.DestLabel,
+		"departure_at":   req.DepartureAt,
+		"total_seats":    req.TotalSeats,
+		"price_per_seat": req.PricePerSeat,
+	})
 
 	return ride, nil
 }
@@ -388,6 +397,7 @@ func (r *Repository) GetByDriver(ctx context.Context, driverID string) ([]*Ride,
 }
 
 func (r *Repository) Update(ctx context.Context, id, driverID string, req UpdateRequest) (*Ride, error) {
+	oldRide, _ := r.GetByID(ctx, id)
 	departure, err := time.Parse(time.RFC3339, req.DepartureAt)
 	if err != nil {
 		return nil, fmt.Errorf("invalid departure_at format")
@@ -425,6 +435,13 @@ func (r *Repository) Update(ctx context.Context, id, driverID string, req Update
 	if err != nil {
 		return nil, err
 	}
+
+	action := "updated"
+	if oldRide != nil && oldRide.PricePerSeat != ride.PricePerSeat {
+		action = "price_changed"
+	}
+	audit.Log(ctx, r.db, "ride", ride.ID, driverID, action, oldRide, ride)
+
 	return ride, nil
 }
 
@@ -440,6 +457,7 @@ func (r *Repository) UpdateStatus(ctx context.Context, id, driverID, status stri
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("ride not found or you are not the driver")
 	}
+	audit.Log(ctx, r.db, "ride", id, driverID, "status_changed", nil, map[string]string{"status": status})
 	return nil
 }
 
@@ -455,6 +473,7 @@ func (r *Repository) Cancel(ctx context.Context, id, driverID string) error {
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("ride not found or already cancelled")
 	}
+	audit.Log(ctx, r.db, "ride", id, driverID, "cancelled", nil, map[string]string{"status": "cancelled"})
 	return nil
 }
 
