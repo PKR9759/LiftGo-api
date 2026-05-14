@@ -21,6 +21,15 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 }
 
 func (r *Repository) Create(ctx context.Context, riderID string, req CreateRequest) (*Booking, error) {
+	if req.IdempotencyKey != "" {
+		var existingID string
+		err := r.db.QueryRow(ctx, "SELECT id FROM bookings WHERE idempotency_key = $1", req.IdempotencyKey).Scan(&existingID)
+		if err == nil && existingID != "" {
+			slog.Info("returning existing booking for idempotency key", "idempotency_key", req.IdempotencyKey, "booking_id", existingID)
+			return r.GetByID(ctx, existingID)
+		}
+	}
+
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		slog.Error("failed to start create booking tx", "error", err)
@@ -95,6 +104,17 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		}
 	}
 
+	pickupFraction = clamp01(pickupFraction)
+	dropoffFraction = clamp01(dropoffFraction)
+
+	// Snap to whole route if pickup/dropoff are very close to start/end points
+	if pickupFraction < 0.05 {
+		pickupFraction = 0.0
+	}
+	if dropoffFraction > 0.95 {
+		dropoffFraction = 1.0
+	}
+
 	if pickupFraction >= dropoffFraction {
 		slog.Warn("invalid booking segment", "pickup", pickupFraction, "dropoff", dropoffFraction, "ride_id", req.RideID)
 		return nil, ErrInvalidSegmentOrder
@@ -127,11 +147,15 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 
 	// Step D — Store fractions in the booking row
 	var bookingID, status string
+	var idempVal *string
+	if req.IdempotencyKey != "" {
+		idempVal = &req.IdempotencyKey
+	}
 	err = tx.QueryRow(ctx,
-		`INSERT INTO bookings (ride_id, rider_id, seats, total_price, pickup_fraction, dropoff_fraction)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		`INSERT INTO bookings (ride_id, rider_id, seats, total_price, pickup_fraction, dropoff_fraction, idempotency_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id, status`,
-		req.RideID, riderID, req.Seats, totalPrice, pickupFraction, dropoffFraction,
+		req.RideID, riderID, req.Seats, totalPrice, pickupFraction, dropoffFraction, idempVal,
 	).Scan(&bookingID, &status)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -738,7 +762,7 @@ func clamp01(v float64) float64 {
 }
 
 func roundMoney(v float64) float64 {
-	return math.Round(v*100) / 100
+	return math.Round(v)
 }
 
 func applySegmentPricing(b *Booking, fullRoutePricePerSeat float64) {

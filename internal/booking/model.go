@@ -24,6 +24,7 @@ type Booking struct {
 	RiderReadyLng   *float64   `json:"rider_ready_lng,omitempty"`
 	PickupFraction  float64    `json:"pickup_fraction"`
 	DropoffFraction float64    `json:"dropoff_fraction"`
+	IdempotencyKey  string     `json:"idempotency_key,omitempty"`
 
 	// Segment fare breakdown
 	FullRoutePricePerSeat float64 `json:"full_route_price_per_seat"`
@@ -43,6 +44,7 @@ type BookingWithRiderInfo struct {
 }
 
 type CreateRequest struct {
+	IdempotencyKey string  `json:"idempotency_key"`
 	RideID     string  `json:"ride_id"`
 	Seats      int     `json:"seats"`
 	PickupLat  float64 `json:"pickup_lat"`
