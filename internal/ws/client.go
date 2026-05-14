@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -14,14 +15,25 @@ const (
 	writeWait      = 10 * time.Second
 	pongWait       = 60 * time.Second
 	pingPeriod     = 54 * time.Second
-	maxMessageSize = 4096
+	maxMessageSize = 32 * 1024
 )
 
 var Upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true
+		}
+		if strings.HasPrefix(origin, "http://localhost:") ||
+			strings.HasPrefix(origin, "http://127.0.0.1:") ||
+			origin == "https://liftgo.tech" ||
+			origin == "https://www.liftgo.tech" {
+			return true
+		}
+		slog.Warn("WebSocket CheckOrigin blocked unauthorized origin", "origin", origin)
+		return false
 	},
 }
 

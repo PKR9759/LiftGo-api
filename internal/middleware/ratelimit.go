@@ -92,8 +92,11 @@ func RateLimit(rdb *redis.Client) func(http.Handler) http.Handler {
 				w.Header().Set("Retry-After", strconv.FormatInt(ttlSecs, 10))
 				w.WriteHeader(http.StatusTooManyRequests)
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"error":                "rate limit exceeded",
-					"retry_after_seconds":  ttlSecs,
+					"error": "rate limit exceeded",
+					"code":  "TOO_MANY_REQUESTS",
+					"details": map[string]any{
+						"retry_after_seconds": ttlSecs,
+					},
 				})
 				return
 			}

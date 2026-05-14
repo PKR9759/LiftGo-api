@@ -100,11 +100,7 @@ func main() {
 		r.Get("/ws/rider/{bookingID}", wsHandler.RiderWS)
 	})
 
-	// ── auth critical paths (no rate limit — needed for WS reconnects) ──
-	// /refresh is called before every WS reconnect attempt; rate limiting it
-	// cascades into WS failures. /logout must always succeed to clear sessions.
-	r.Post("/api/auth/refresh", authHandler.Refresh)
-	r.Post("/api/auth/logout", authHandler.Logout)
+
 
 	// ── REST routes (rate-limited) ─────────────────────────────────────
 	r.Group(func(r chi.Router) {
@@ -153,7 +149,8 @@ func main() {
 		r.Route("/api/auth", func(r chi.Router) {
 			r.Post("/register", authHandler.Register)
 			r.Post("/login", authHandler.Login)
-			// /refresh and /logout are outside the rate-limited group (registered above)
+			r.Post("/refresh", authHandler.Refresh)
+			r.Post("/logout", authHandler.Logout)
 
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireAuth)

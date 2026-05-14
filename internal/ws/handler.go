@@ -132,6 +132,7 @@ func (h *Handler) DriverWS(w http.ResponseWriter, r *http.Request) {
 		slog.Error("WS upgrade error", "error", err, "booking_id", bookingID, "request_id", reqID)
 		return
 	}
+	conn.SetReadLimit(32 * 1024)
 
 	client := &Client{
 		hub:       h.hub,
@@ -184,6 +185,7 @@ func (h *Handler) RiderWS(w http.ResponseWriter, r *http.Request) {
 		slog.Error("WS upgrade error", "error", err, "booking_id", bookingID, "request_id", reqID)
 		return
 	}
+	conn.SetReadLimit(32 * 1024)
 
 	client := &Client{
 		hub:       h.hub,
