@@ -73,7 +73,7 @@ func main() {
 	// ── handlers ────────────────────────────────────────────
 	authHandler := auth.NewHandler(auth.NewService(pool))
 	userHandler := user.NewHandler(user.NewService(user.NewRepository(pool)))
-	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)), pool, emailClient, pushClient, redisClient)
+	rideHandler := ride.NewHandler(ride.NewService(ride.NewRepository(pool)), pool, emailClient, pushClient, hub, redisClient)
 	seekHandler := seek.NewHandler(seek.NewService(seek.NewRepository(pool)))
 	bookingHandler := booking.NewHandler(booking.NewService(booking.NewRepository(pool)), pool, emailClient, pushClient, hub, redisClient)
 	reviewHandler := review.NewHandler(review.NewService(review.NewRepository(pool)))
@@ -81,11 +81,12 @@ func main() {
 
 	// ── router ───────────────────────────────────────────────
 	r := chi.NewRouter()
+
+	// ── global middleware (must be declared before any routes in chi) ──
+	allowedOrigins := allowedOriginsFromEnv()
 	r.Use(customMiddleware.RequestID)
 	r.Use(customMiddleware.RequestLogger)
-	r.Use(customMiddleware.RateLimit(redisClient))
 	r.Use(middleware.Recoverer)
-	allowedOrigins := allowedOriginsFromEnv()
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -94,123 +95,136 @@ func main() {
 		MaxAge:           300,
 	}))
 
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		useCache := os.Getenv("USE_CACHE") == "true"
-
-		// Ping database
-		dbStatus := "ok"
-		if err := pool.Ping(r.Context()); err != nil {
-			dbStatus = "error"
-		}
-
-		// Ping Redis
-		redisStatus := "disabled"
-		if useCache {
-			if redisClient == nil {
-				redisStatus = "error"
-			} else if _, err := redisClient.Ping(r.Context()).Result(); err != nil {
-				redisStatus = "error"
-			} else {
-				redisStatus = "ok"
-			}
-		}
-
-		// Overall status: degraded when Redis is required but unavailable
-		overallStatus := "ok"
-		if dbStatus == "error" || (useCache && redisStatus == "error") {
-			overallStatus = "degraded"
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		if overallStatus == "degraded" {
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":        overallStatus,
-			"database":      dbStatus,
-			"redis":         redisStatus,
-			"cache_enabled": useCache,
-		})
-	})
-
-	// ── auth ─────────────────────────────────────────────────
-	r.Route("/api/auth", func(r chi.Router) {
-		r.Post("/register", authHandler.Register)
-		r.Post("/login", authHandler.Login)
-		r.Post("/refresh", authHandler.Refresh)
-		r.Post("/logout", authHandler.Logout)
-
-		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireAuth)
-			r.Get("/me", authHandler.GetMe)
-		})
-	})
-
-	// ── users ─────────────────────────────────────────────────
-	r.Route("/api/users", func(r chi.Router) {
-		r.Get("/{id}/reviews", reviewHandler.GetByReviewee)
-		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireAuth)
-			r.Get("/me", userHandler.GetMe)
-			r.Put("/me", userHandler.UpdateMe)
-		})
-	})
-
-	// ── notifications ────────────────────────────────────────
+	// ── websocket routes (no rate limiter — long-lived upgrades) ──────
+	// Auth is enforced inside the handler via JWT query param / cookie.
 	r.Group(func(r chi.Router) {
-		r.Use(auth.RequireAuth)
-		r.Post("/api/push/subscribe", notification.SubscribeHandler(pushClient))
+		r.Get("/ws/driver/{bookingID}", wsHandler.DriverWS)
+		r.Get("/ws/rider/{bookingID}", wsHandler.RiderWS)
 	})
 
-	// ── rides ─────────────────────────────────────────────────
-	r.With(auth.PopulateUser).Get("/api/rides/nearby", rideHandler.FindNearby)
-	r.Route("/api/rides", func(r chi.Router) {
-		r.Use(auth.RequireAuth)
-		r.Post("/", rideHandler.Create)
-		r.Get("/mine", rideHandler.GetMine)
-		r.Get("/{id}", rideHandler.GetByID)
-		r.Put("/{id}", rideHandler.Update)
-		r.Put("/{id}/status", rideHandler.UpdateStatus)
-		r.Delete("/{id}", rideHandler.Cancel)
-		r.Get("/{id}/bookings", bookingHandler.GetRideBookings)
-		r.Put("/{id}/start-ride", bookingHandler.StartRide)
-		r.Get("/{id}/status-summary", rideHandler.GetStatusSummary)
-	})
+	// ── auth critical paths (no rate limit — needed for WS reconnects) ──
+	// /refresh is called before every WS reconnect attempt; rate limiting it
+	// cascades into WS failures. /logout must always succeed to clear sessions.
+	r.Post("/api/auth/refresh", authHandler.Refresh)
+	r.Post("/api/auth/logout", authHandler.Logout)
 
-	// ── seeks ─────────────────────────────────────────────────
-	r.With(auth.PopulateUser).Get("/api/seeks/nearby", seekHandler.FindNearby)
-	r.Route("/api/seeks", func(r chi.Router) {
-		r.Use(auth.RequireAuth)
-		r.Post("/", seekHandler.Create)
-		r.Get("/mine", seekHandler.GetMine)
-		r.Get("/{id}", seekHandler.GetByID)
-		r.Delete("/{id}", seekHandler.Cancel)
-	})
+	// ── REST routes (rate-limited) ─────────────────────────────────────
+	r.Group(func(r chi.Router) {
+		r.Use(customMiddleware.RateLimit(redisClient))
 
-	// ── bookings ──────────────────────────────────────────────
-	r.Route("/api/bookings", func(r chi.Router) {
-		r.Use(auth.RequireAuth)
-		r.Post("/", bookingHandler.Create)
-		r.Get("/mine", bookingHandler.GetMine)
-		r.Get("/incoming", bookingHandler.GetIncoming)
-		r.Get("/{id}", bookingHandler.GetByID)
-		r.Put("/{id}/confirm", bookingHandler.Confirm)
-		r.Put("/{id}/cancel", bookingHandler.Cancel)
-		r.Put("/{id}/rider-ready", bookingHandler.RiderReady)
-		r.Put("/{id}/picked-up", bookingHandler.PickedUp)
-		r.Put("/{id}/dropped", bookingHandler.Dropped)
-		r.Put("/{id}/no-show", bookingHandler.NoShow)
-	})
+		r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+			useCache := os.Getenv("USE_CACHE") == "true"
 
-	// ── reviews ───────────────────────────────────────────────
-	r.Route("/api/reviews", func(r chi.Router) {
-		r.Use(auth.RequireAuth)
-		r.Post("/", reviewHandler.Create)
-	})
+			// Ping database
+			dbStatus := "ok"
+			if err := pool.Ping(r.Context()); err != nil {
+				dbStatus = "error"
+			}
 
-	// ── websocket routes ──────────────────────────────────────
-	r.Get("/ws/driver/{bookingID}", wsHandler.DriverWS)
-	r.Get("/ws/rider/{bookingID}", wsHandler.RiderWS)
+			// Ping Redis
+			redisStatus := "disabled"
+			if useCache {
+				if redisClient == nil {
+					redisStatus = "error"
+				} else if _, err := redisClient.Ping(r.Context()).Result(); err != nil {
+					redisStatus = "error"
+				} else {
+					redisStatus = "ok"
+				}
+			}
+
+			// Overall status: degraded when Redis is required but unavailable
+			overallStatus := "ok"
+			if dbStatus == "error" || (useCache && redisStatus == "error") {
+				overallStatus = "degraded"
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			if overallStatus == "degraded" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":        overallStatus,
+				"database":      dbStatus,
+				"redis":         redisStatus,
+				"cache_enabled": useCache,
+			})
+		})
+
+		// ── auth ─────────────────────────────────────────────────
+		r.Route("/api/auth", func(r chi.Router) {
+			r.Post("/register", authHandler.Register)
+			r.Post("/login", authHandler.Login)
+			// /refresh and /logout are outside the rate-limited group (registered above)
+
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireAuth)
+				r.Get("/me", authHandler.GetMe)
+			})
+		})
+
+		// ── users ─────────────────────────────────────────────────
+		r.Route("/api/users", func(r chi.Router) {
+			r.Get("/{id}/reviews", reviewHandler.GetByReviewee)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireAuth)
+				r.Get("/me", userHandler.GetMe)
+				r.Put("/me", userHandler.UpdateMe)
+			})
+		})
+
+		// ── notifications ────────────────────────────────────────
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Post("/api/push/subscribe", notification.SubscribeHandler(pushClient))
+		})
+
+		// ── rides ─────────────────────────────────────────────────
+		r.With(auth.PopulateUser).Get("/api/rides/nearby", rideHandler.FindNearby)
+		r.Route("/api/rides", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Post("/", rideHandler.Create)
+			r.Get("/mine", rideHandler.GetMine)
+			r.Get("/{id}", rideHandler.GetByID)
+			r.Put("/{id}", rideHandler.Update)
+			r.Put("/{id}/status", rideHandler.UpdateStatus)
+			r.Delete("/{id}", rideHandler.Cancel)
+			r.Get("/{id}/bookings", bookingHandler.GetRideBookings)
+			r.Put("/{id}/start-ride", bookingHandler.StartRide)
+			r.Get("/{id}/status-summary", rideHandler.GetStatusSummary)
+		})
+
+		// ── seeks ─────────────────────────────────────────────────
+		r.With(auth.PopulateUser).Get("/api/seeks/nearby", seekHandler.FindNearby)
+		r.Route("/api/seeks", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Post("/", seekHandler.Create)
+			r.Get("/mine", seekHandler.GetMine)
+			r.Get("/{id}", seekHandler.GetByID)
+			r.Delete("/{id}", seekHandler.Cancel)
+		})
+
+		// ── bookings ──────────────────────────────────────────────
+		r.Route("/api/bookings", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Post("/", bookingHandler.Create)
+			r.Get("/mine", bookingHandler.GetMine)
+			r.Get("/incoming", bookingHandler.GetIncoming)
+			r.Get("/{id}", bookingHandler.GetByID)
+			r.Put("/{id}/confirm", bookingHandler.Confirm)
+			r.Put("/{id}/cancel", bookingHandler.Cancel)
+			r.Put("/{id}/rider-ready", bookingHandler.RiderReady)
+			r.Put("/{id}/picked-up", bookingHandler.PickedUp)
+			r.Put("/{id}/dropped", bookingHandler.Dropped)
+			r.Put("/{id}/no-show", bookingHandler.NoShow)
+		})
+
+		// ── reviews ───────────────────────────────────────────────
+		r.Route("/api/reviews", func(r chi.Router) {
+			r.Use(auth.RequireAuth)
+			r.Post("/", reviewHandler.Create)
+		})
+	})
 
 	// ── start ─────────────────────────────────────────────────
 	port := os.Getenv("PORT")

@@ -30,8 +30,8 @@ type Hub struct {
 
 func NewHub() *Hub {
 	return &Hub{
-		broadcast:       make(chan LocationMessage),
-		broadcastToRoom: make(chan RoomMessage),
+		broadcast:       make(chan LocationMessage, 256),
+		broadcastToRoom: make(chan RoomMessage, 256),
 		register:        make(chan *Client),
 		unregister:      make(chan *Client),
 		rooms:           make(map[string]map[*Client]bool),

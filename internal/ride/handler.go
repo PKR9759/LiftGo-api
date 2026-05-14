@@ -17,6 +17,7 @@ import (
 	customMiddleware "github.com/PKR9759/LiftGo-api/internal/middleware"
 	"github.com/PKR9759/LiftGo-api/internal/notification"
 	"github.com/PKR9759/LiftGo-api/internal/utils"
+	"github.com/PKR9759/LiftGo-api/internal/ws"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -27,15 +28,17 @@ type Handler struct {
 	db          *pgxpool.Pool
 	emailClient *notification.EmailClient
 	pushClient  *notification.PushClient
+	hub         *ws.Hub
 	rdb         *redis.Client // nil when USE_CACHE=false or Redis unavailable
 }
 
-func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.EmailClient, pushClient *notification.PushClient, rdb *redis.Client) *Handler {
+func NewHandler(service *Service, db *pgxpool.Pool, emailClient *notification.EmailClient, pushClient *notification.PushClient, hub *ws.Hub, rdb *redis.Client) *Handler {
 	return &Handler{
 		service:     service,
 		db:          db,
 		emailClient: emailClient,
 		pushClient:  pushClient,
+		hub:         hub,
 		rdb:         rdb,
 	}
 }
@@ -379,6 +382,20 @@ func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 			}
 			h.emailClient.Send(driverEmail, "Ride completed — Leave reviews", "<p>Your ride is completed. Please rate your passengers.</p>")
 			h.pushClient.SendToUser(drvID, "Ride completed", "Please rate your passengers.", "/dashboard")
+		}
+
+		// Broadcast WS update to all active bookings
+		if h.hub != nil {
+			rows, err := h.db.Query(ctx, "SELECT id FROM bookings WHERE ride_id = $1 AND status IN ('confirmed', 'rider_ready', 'picked_up')", rID)
+			if err == nil {
+				defer rows.Close()
+				for rows.Next() {
+					var bID string
+					if err := rows.Scan(&bID); err == nil {
+						h.hub.BroadcastToRoom(bID, []byte(`{"type":"status_update"}`))
+					}
+				}
+			}
 		}
 	}(req.Status, id, claims.UserID, reqID)
 

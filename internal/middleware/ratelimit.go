@@ -103,13 +103,16 @@ func RateLimit(rdb *redis.Client) func(http.Handler) http.Handler {
 	}
 }
 
-// incrementCounter uses a Redis pipeline to atomically INCR the counter and
-// set an expiry only on the first request in the window.
-// Returns the current count and remaining TTL in seconds.
+// incrementCounter uses a Redis pipeline to atomically increment a fixed-window
+// counter. The key expires after windowSecs from when it was FIRST created.
+// On each subsequent request within the window the counter increments but the
+// TTL is NOT reset — this is a true fixed window, not a sliding one.
 func incrementCounter(ctx context.Context, rdb *redis.Client, key string, windowSecs int64) (int64, int64, error) {
 	pipe := rdb.Pipeline()
 	incrCmd := pipe.Incr(ctx, key)
-	pipe.Expire(ctx, key, time.Duration(windowSecs)*time.Second) // no-op after first call sets it
+	// SetNX sets the expiry ONLY when the key doesn't exist yet (first hit in window).
+	// Unlike Expire, this does NOT reset the TTL on subsequent requests.
+	pipe.SetNX(ctx, key+":exp", 1, time.Duration(windowSecs)*time.Second)
 	_, err := pipe.Exec(ctx)
 	if err != nil {
 		return 0, windowSecs, err
@@ -117,8 +120,8 @@ func incrementCounter(ctx context.Context, rdb *redis.Client, key string, window
 
 	count := incrCmd.Val()
 
-	// Set expiry explicitly only when count == 1 (first hit in this window)
-	// so we do not reset the window on every request.
+	// Set the real key's expiry only on the first hit (count == 1).
+	// This keeps the window anchored to when it started, not when traffic stops.
 	if count == 1 {
 		rdb.Expire(ctx, key, time.Duration(windowSecs)*time.Second)
 	}

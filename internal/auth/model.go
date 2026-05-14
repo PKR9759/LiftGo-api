@@ -18,7 +18,7 @@ type LoginRequest struct {
 
 type AuthResponse struct {
 	User         UserPublic `json:"user"`
-	AccessToken  string     `json:"-"`
+	AccessToken  string     `json:"access_token,omitempty"`
 	RefreshToken string     `json:"-"`
 }
 
