@@ -163,7 +163,7 @@ func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("Handler.GetByID booking entry", "request_id", reqID, "booking_id", id)
 
-	booking, err := h.service.GetByID(r.Context(), id)
+	booking, err := h.service.GetByIDForUser(r.Context(), id, auth.GetUserFromContext(r).UserID)
 	if err != nil {
 		slog.Error("GetByID booking failed", "error", err, "request_id", reqID)
 		utils.WriteError(w, http.StatusNotFound, "booking not found")
@@ -284,8 +284,8 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Guard 2: time guard — only for confirmed bookings
-	if bookingStatus == "confirmed" && time.Until(departureAt) < time.Hour {
+	// Guard 2: time guard — only for confirmed/rider_ready bookings
+	if (bookingStatus == "confirmed" || bookingStatus == "rider_ready") && time.Until(departureAt) < time.Hour {
 		utils.WriteError(w, http.StatusConflict, "Cannot cancel within 1 hour of departure")
 		return
 	}

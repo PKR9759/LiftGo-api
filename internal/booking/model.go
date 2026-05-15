@@ -24,6 +24,10 @@ type Booking struct {
 	RiderReadyLng   *float64   `json:"rider_ready_lng,omitempty"`
 	PickupFraction  float64    `json:"pickup_fraction"`
 	DropoffFraction float64    `json:"dropoff_fraction"`
+	PickupLat       *float64   `json:"pickup_lat,omitempty"`
+	PickupLng       *float64   `json:"pickup_lng,omitempty"`
+	DropoffLat      *float64   `json:"dropoff_lat,omitempty"`
+	DropoffLng      *float64   `json:"dropoff_lng,omitempty"`
 	IdempotencyKey  string     `json:"idempotency_key,omitempty"`
 
 	// Segment fare breakdown

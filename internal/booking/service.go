@@ -40,6 +40,10 @@ func (s *Service) GetByID(ctx context.Context, id string) (*Booking, error) {
 	return s.repo.GetByID(ctx, id)
 }
 
+func (s *Service) GetByIDForUser(ctx context.Context, id, userID string) (*Booking, error) {
+	return s.repo.GetByIDForUser(ctx, id, userID)
+}
+
 func (s *Service) GetMine(ctx context.Context, riderID string) ([]*Booking, error) {
 	bookings, err := s.repo.GetByRider(ctx, riderID)
 	if err != nil {

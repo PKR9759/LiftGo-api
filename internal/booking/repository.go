@@ -153,10 +153,11 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		idempVal = &req.IdempotencyKey
 	}
 	err = tx.QueryRow(ctx,
-		`INSERT INTO bookings (ride_id, rider_id, seats, total_price, pickup_fraction, dropoff_fraction, idempotency_key)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO bookings (ride_id, rider_id, seats, total_price, pickup_fraction, dropoff_fraction, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, idempotency_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		 RETURNING id, status`,
-		req.RideID, riderID, req.Seats, totalPrice, pickupFraction, dropoffFraction, idempVal,
+		req.RideID, riderID, req.Seats, totalPrice, pickupFraction, dropoffFraction,
+		req.PickupLat, req.PickupLng, req.DropoffLat, req.DropoffLng, idempVal,
 	).Scan(&bookingID, &status)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -184,24 +185,45 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 	return r.GetByID(ctx, bookingID)
 }
 
+// GetByID fetches a booking by its ID. No auth scoping — callers must check ownership.
+// GetByIDForUser fetches a booking only if the requesting user is the rider or the ride driver.
 func (r *Repository) GetByID(ctx context.Context, id string) (*Booking, error) {
+	return r.getByID(ctx, id, "")
+}
+
+func (r *Repository) GetByIDForUser(ctx context.Context, id, userID string) (*Booking, error) {
+	return r.getByID(ctx, id, userID)
+}
+
+func (r *Repository) getByID(ctx context.Context, id, userID string) (*Booking, error) {
 	b := &Booking{}
 	var ridePricePerSeat float64
-	err := r.db.QueryRow(ctx,
-		`SELECT b.id, b.ride_id, b.rider_id, ur.name,
+	query := `SELECT b.id, b.ride_id, b.rider_id, ur.name,
 		        ri.driver_id, ud.name,
 		        ri.origin_label, ri.dest_label, ri.departure_at,
 		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
 		        b.picked_up_at, b.dropped_at,
 		        b.rider_ready_lat, b.rider_ready_lng,
 		        COALESCE(b.pickup_fraction, 0) AS pickup_fraction,
-		        COALESCE(b.dropoff_fraction, 0) AS dropoff_fraction
+		        COALESCE(b.dropoff_fraction, 0) AS dropoff_fraction,
+		        b.pickup_lat, b.pickup_lng, b.dropoff_lat, b.dropoff_lng
 		 FROM bookings b
 		 JOIN users  ur ON ur.id = b.rider_id
 		 JOIN rides  ri ON ri.id = b.ride_id
 		 JOIN users  ud ON ud.id = ri.driver_id
-		 WHERE b.id = $1`, id,
-	).Scan(
+		 WHERE b.id = $1`
+	if userID != "" {
+		query += ` AND (b.rider_id = $2 OR ri.driver_id = $2)`
+	}
+	var row interface {
+		Scan(...any) error
+	}
+	if userID != "" {
+		row = r.db.QueryRow(ctx, query, id, userID)
+	} else {
+		row = r.db.QueryRow(ctx, query, id)
+	}
+	err := row.Scan(
 		&b.ID, &b.RideID, &b.RiderID, &b.RiderName,
 		&b.DriverID, &b.DriverName,
 		&b.OriginLabel, &b.DestLabel, &b.DepartureAt,
@@ -209,6 +231,7 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Booking, error) {
 		&b.PickedUpAt, &b.DroppedAt,
 		&b.RiderReadyLat, &b.RiderReadyLng,
 		&b.PickupFraction, &b.DropoffFraction,
+		&b.PickupLat, &b.PickupLng, &b.DropoffLat, &b.DropoffLng,
 	)
 	if err != nil {
 		slog.Error("GetByID booking failed", "error", err, "booking_id", id)
@@ -515,15 +538,16 @@ func (r *Repository) GetRideBookingsWithRiderInfo(ctx context.Context, rideID, d
 
 func (r *Repository) CheckDriverLocation(ctx context.Context, bookingID string, driverLat, driverLng float64) (bool, error) {
 	var isWithin bool
+	// Use rider's actual stored pickup coordinates if available, fall back to ride origin.
 	err := r.db.QueryRow(ctx,
 		`SELECT ST_DWithin(
 			ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
 			ST_SetSRID(ST_MakePoint(
-				ri.origin_lng,
-				ri.origin_lat
+				COALESCE(b.pickup_lng, ri.origin_lng),
+				COALESCE(b.pickup_lat, ri.origin_lat)
 			), 4326)::geography,
 			200
-		) 
+		)
 		FROM bookings b
 		JOIN rides ri ON ri.id = b.ride_id
 		WHERE b.id = $3`,
