@@ -296,18 +296,17 @@ func (r *Repository) FindNearby(ctx context.Context, p NearbyParams) ([]*Ride, e
 		JOIN users u ON u.id = r.driver_id
 
 		WHERE
-		  r.status IN ('scheduled', 'active')
-		  AND r.available_seats >= $7
-		  -- Step 2.3 — Segment-specific capacity check
+		  r.status IN ('scheduled', 'active', 'full')
+		  -- Segment-specific capacity check: count only overlapping bookings
 		  AND (
 		    r.total_seats - (
 		      SELECT COALESCE(SUM(b2.seats), 0)
 		      FROM bookings b2
 		      WHERE b2.ride_id = r.id
 		        AND b2.status IN ('confirmed', 'rider_ready', 'picked_up')
-		        -- Overlap check: booking starts before passenger ends AND ends after passenger starts
-		        AND b2.pickup_fraction < ST_LineLocatePoint(r.route, ST_ClosestPoint(r.route, ST_SetSRID(ST_MakePoint($4, $3), 4326)))
-		        AND b2.dropoff_fraction > ST_LineLocatePoint(r.route, ST_ClosestPoint(r.route, ST_SetSRID(ST_MakePoint($2, $1), 4326)))
+		        -- Overlap: existing rider's segment overlaps with new passenger's segment
+		        AND (b2.pickup_fraction + 0.02) < ST_LineLocatePoint(r.route, ST_ClosestPoint(r.route, ST_SetSRID(ST_MakePoint($4, $3), 4326)))
+		        AND (b2.dropoff_fraction - 0.02) > ST_LineLocatePoint(r.route, ST_ClosestPoint(r.route, ST_SetSRID(ST_MakePoint($2, $1), 4326)))
 		    )
 		  ) >= $7
 		  AND r.departure_at > (now() - interval '1 hour')

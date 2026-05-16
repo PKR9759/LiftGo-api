@@ -62,7 +62,7 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		return nil, fmt.Errorf("you cannot book your own ride")
 	}
 
-	if rideStatus != "scheduled" && rideStatus != "active" {
+	if rideStatus != "scheduled" && rideStatus != "active" && rideStatus != "full" {
 		return nil, fmt.Errorf("ride is already %s", rideStatus)
 	}
 
@@ -70,9 +70,7 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		return nil, fmt.Errorf("cannot book a ride that departed more than 1 hour ago")
 	}
 
-	if req.Seats > availableSeats {
-		return nil, ErrSegmentCapacity
-	}
+	// Global seat check removed in favor of segment-aware check in Step C below
 
 	var existingCount int
 	err = tx.QueryRow(ctx,
@@ -88,20 +86,29 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		return nil, fmt.Errorf("you already have an active booking on this ride")
 	}
 
-	// Step B — Compute pickup/dropoff fractions. If route geometry is missing,
-	// fallback to full-route occupancy checks.
+	// Step B — Compute pickup/dropoff fractions and validate that both points
+	// are close enough to the stored driver route.
 	pickupFraction, dropoffFraction := 0.0, 1.0
 	if len(route) > 0 {
+		var pickupOnRoute, dropoffOnRoute bool
 		err = tx.QueryRow(ctx,
 			`SELECT
 				ST_LineLocatePoint(route, ST_ClosestPoint(route, ST_SetSRID(ST_MakePoint($1, $2), 4326))),
-				ST_LineLocatePoint(route, ST_ClosestPoint(route, ST_SetSRID(ST_MakePoint($3, $4), 4326)))
-			 FROM rides WHERE id = $5`,
-			req.PickupLng, req.PickupLat, req.DropoffLng, req.DropoffLat, req.RideID,
-		).Scan(&pickupFraction, &dropoffFraction)
+				ST_LineLocatePoint(route, ST_ClosestPoint(route, ST_SetSRID(ST_MakePoint($3, $4), 4326))),
+				ST_DWithin(route::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $5),
+				ST_DWithin(route::geography, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5)
+			 FROM rides WHERE id = $6`,
+			req.PickupLng, req.PickupLat, req.DropoffLng, req.DropoffLat,
+			5000, // match liveboard search radius so partial-route bookings are accepted
+			req.RideID,
+		).Scan(&pickupFraction, &dropoffFraction, &pickupOnRoute, &dropoffOnRoute)
 		if err != nil {
 			slog.Error("failed to calculate ride fractions", "error", err, "ride_id", req.RideID)
 			return nil, fmt.Errorf("failed to calculate location on route")
+		}
+		if !pickupOnRoute || !dropoffOnRoute {
+			slog.Warn("booking points are too far from route", "pickup_on_route", pickupOnRoute, "dropoff_on_route", dropoffOnRoute, "ride_id", req.RideID)
+			return nil, ErrPointNotOnRoute
 		}
 	}
 
@@ -128,8 +135,8 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		 FROM bookings b
 		 WHERE b.ride_id = $1
 		   AND b.status IN ('confirmed', 'rider_ready', 'picked_up')
-		   AND b.pickup_fraction < $3
-		   AND b.dropoff_fraction > $2`,
+		   AND (b.pickup_fraction + 0.02) < $3
+		   AND (b.dropoff_fraction - 0.02) > $2`,
 		req.RideID, pickupFraction, dropoffFraction,
 	).Scan(&occupiedSeats)
 	if err != nil {
@@ -137,8 +144,10 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		return nil, fmt.Errorf("failed to check seat capacity")
 	}
 
+	slog.Info("segment fractions calculated", "ride_id", req.RideID, "pickup", pickupFraction, "dropoff", dropoffFraction, "occupied", occupiedSeats, "requested", req.Seats, "total", totalSeats)
+
 	if occupiedSeats+req.Seats > totalSeats {
-		slog.Warn("insufficient segment capacity", "occupied", occupiedSeats, "requested", req.Seats, "total", totalSeats, "ride_id", req.RideID)
+		slog.Warn("insufficient segment capacity", "occupied", occupiedSeats, "requested", req.Seats, "total", totalSeats, "ride_id", req.RideID, "pickup", pickupFraction, "dropoff", dropoffFraction)
 		return nil, ErrSegmentCapacity
 	}
 
@@ -336,14 +345,15 @@ func (r *Repository) ConfirmBooking(ctx context.Context, id, driverID string) (*
 	var rideID string
 	var bookingStatus string
 	var rideStatus string
+	var totalSeats int
 	err = tx.QueryRow(ctx,
-		`SELECT b.id, b.seats, b.ride_id, b.status, ri.status
+		`SELECT b.id, b.seats, b.ride_id, b.status, ri.status, ri.total_seats
 		 FROM bookings b
 		 JOIN rides ri ON ri.id = b.ride_id
 		 WHERE b.id = $1 AND ri.driver_id = $2
 		 FOR UPDATE OF b, ri`,
 		id, driverID,
-	).Scan(&returnedID, &seats, &rideID, &bookingStatus, &rideStatus)
+	).Scan(&returnedID, &seats, &rideID, &bookingStatus, &rideStatus, &totalSeats)
 	if err != nil {
 		slog.Error("booking confirm verification failed", "error", err, "booking_id", id, "driver_id", driverID)
 		return nil, fmt.Errorf("booking not found or not authorised")
@@ -353,26 +363,50 @@ func (r *Repository) ConfirmBooking(ctx context.Context, id, driverID string) (*
 		return nil, fmt.Errorf("booking is already %s", bookingStatus)
 	}
 
-	if rideStatus != "scheduled" && rideStatus != "active" {
+	// Allow 'full' rides — segment overlap check already validated capacity at booking creation
+	if rideStatus != "scheduled" && rideStatus != "active" && rideStatus != "full" {
 		return nil, fmt.Errorf("ride is %s and cannot accept confirmations", rideStatus)
 	}
 
-	// now decrement seats atomically
-	var updatedRideID string
-	err = tx.QueryRow(ctx,
-		`UPDATE rides
-		 SET available_seats = available_seats - $1,
-		     updated_at = now()
-		 WHERE id = $2
-		   AND available_seats >= $1
-		 RETURNING id`,
-		seats, rideID,
-	).Scan(&updatedRideID)
+	// NEW: Segment capacity check during confirmation to prevent overbooking
+	var pickupFraction, dropoffFraction float64
+	err = tx.QueryRow(ctx, `SELECT pickup_fraction, dropoff_fraction FROM bookings WHERE id = $1`, id).Scan(&pickupFraction, &dropoffFraction)
 	if err != nil {
-		slog.Error("ride seat decrement failed", "error", err, "ride_id", rideID, "deduct_seats", seats)
-		return nil, fmt.Errorf("not enough seats to confirm this booking")
+		return nil, fmt.Errorf("failed to get booking fractions")
 	}
 
+	var occupiedSeats int
+	err = tx.QueryRow(ctx,
+		`SELECT COALESCE(SUM(b.seats), 0) AS occupied_seats
+		 FROM bookings b
+		 WHERE b.ride_id = $1
+		   AND b.status IN ('confirmed', 'rider_ready', 'picked_up')
+		   AND (b.pickup_fraction + 0.02) < $3
+		   AND (b.dropoff_fraction - 0.02) > $2`,
+		rideID, pickupFraction, dropoffFraction,
+	).Scan(&occupiedSeats)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check capacity")
+	}
+
+	if occupiedSeats+seats > totalSeats {
+		return nil, fmt.Errorf("cannot confirm: this segment is now full")
+	}
+
+	// Decrement available_seats for display purposes (best-effort, not a hard gate)
+	_, err = tx.Exec(ctx,
+		`UPDATE rides
+		 SET available_seats = GREATEST(available_seats - $1, 0),
+		     updated_at = now()
+		 WHERE id = $2`,
+		seats, rideID,
+	)
+	if err != nil {
+		slog.Error("ride seat decrement failed (non-fatal)", "error", err, "ride_id", rideID)
+		// non-fatal: segment capacity is the real gate, not available_seats
+	}
+
+	// Confirm the booking
 	err = tx.QueryRow(ctx,
 		`UPDATE bookings
 		 SET status = 'confirmed', updated_at = now()
@@ -384,18 +418,6 @@ func (r *Repository) ConfirmBooking(ctx context.Context, id, driverID string) (*
 		return nil, fmt.Errorf("booking is no longer pending")
 	}
 
-	// mark ride full if seats hit 0
-	_, err = tx.Exec(ctx,
-		`UPDATE rides
-		 SET status = CASE WHEN available_seats = 0 THEN 'full' ELSE status END,
-		     updated_at = now()
-		 WHERE id = $1`, rideID,
-	)
-	if err != nil {
-		slog.Error("mark ride full failed", "error", err)
-		return nil, err
-	}
-
 	audit.Log(ctx, tx, "booking", returnedID, driverID, "confirmed", nil, map[string]string{"status": "confirmed"})
 
 	if err := tx.Commit(ctx); err != nil {
@@ -403,7 +425,7 @@ func (r *Repository) ConfirmBooking(ctx context.Context, id, driverID string) (*
 		return nil, err
 	}
 
-	slog.Info("booking confirmed successfully in db", "booking_id", returnedID, "ride_id", updatedRideID)
+	slog.Info("booking confirmed successfully in db", "booking_id", returnedID, "ride_id", rideID)
 	return r.GetByID(ctx, returnedID)
 }
 

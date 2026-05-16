@@ -84,6 +84,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			utils.WriteError(w, http.StatusConflict, err.Error())
 			return
 		}
+		if errors.Is(err, ErrPointNotOnRoute) || errors.Is(err, ErrInvalidSegmentOrder) {
+			utils.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		msg := err.Error()
 		switch {
 		case msg == "you cannot book your own ride":
