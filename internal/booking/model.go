@@ -53,8 +53,10 @@ type CreateRequest struct {
 	Seats      int     `json:"seats"`
 	PickupLat  float64 `json:"pickup_lat"`
 	PickupLng  float64 `json:"pickup_lng"`
+	PickupLabel string `json:"pickup_label"`
 	DropoffLat float64 `json:"dropoff_lat"`
 	DropoffLng float64 `json:"dropoff_lng"`
+	DropoffLabel string `json:"dropoff_label"`
 }
 
 type PickedUpRequest struct {

@@ -162,11 +162,11 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		idempVal = &req.IdempotencyKey
 	}
 	err = tx.QueryRow(ctx,
-		`INSERT INTO bookings (ride_id, rider_id, seats, total_price, pickup_fraction, dropoff_fraction, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, idempotency_key)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`INSERT INTO bookings (ride_id, rider_id, seats, total_price, pickup_fraction, dropoff_fraction, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, pickup_label, dropoff_label, idempotency_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		 RETURNING id, status`,
 		req.RideID, riderID, req.Seats, totalPrice, pickupFraction, dropoffFraction,
-		req.PickupLat, req.PickupLng, req.DropoffLat, req.DropoffLng, idempVal,
+		req.PickupLat, req.PickupLng, req.DropoffLat, req.DropoffLng, req.PickupLabel, req.DropoffLabel, idempVal,
 	).Scan(&bookingID, &status)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -209,7 +209,7 @@ func (r *Repository) getByID(ctx context.Context, id, userID string) (*Booking, 
 	var ridePricePerSeat float64
 	query := `SELECT b.id, b.ride_id, b.rider_id, ur.name,
 		        ri.driver_id, ud.name,
-		        ri.origin_label, ri.dest_label, ri.departure_at,
+		        COALESCE(b.pickup_label, ri.origin_label), COALESCE(b.dropoff_label, ri.dest_label), ri.departure_at,
 		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
 		        b.picked_up_at, b.dropped_at,
 		        b.rider_ready_lat, b.rider_ready_lng,
@@ -254,7 +254,7 @@ func (r *Repository) GetByRider(ctx context.Context, riderID string) ([]*Booking
 	rows, err := r.db.Query(ctx,
 		`SELECT b.id, b.ride_id, b.rider_id, ur.name,
 		        ri.driver_id, ud.name,
-		        ri.origin_label, ri.dest_label, ri.departure_at,
+		        COALESCE(b.pickup_label, ri.origin_label), COALESCE(b.dropoff_label, ri.dest_label), ri.departure_at,
 		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
 		        b.picked_up_at, b.dropped_at,
 		        b.rider_ready_lat, b.rider_ready_lng,
@@ -279,7 +279,7 @@ func (r *Repository) GetIncoming(ctx context.Context, driverID string) ([]*Booki
 	rows, err := r.db.Query(ctx,
 		`SELECT b.id, b.ride_id, b.rider_id, ur.name,
 		        ri.driver_id, ud.name,
-		        ri.origin_label, ri.dest_label, ri.departure_at,
+		        COALESCE(b.pickup_label, ri.origin_label), COALESCE(b.dropoff_label, ri.dest_label), ri.departure_at,
 		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
 		        b.picked_up_at, b.dropped_at,
 		        b.rider_ready_lat, b.rider_ready_lng,
@@ -507,7 +507,7 @@ func (r *Repository) GetRideBookingsWithRiderInfo(ctx context.Context, rideID, d
 	rows, err := r.db.Query(ctx,
 		`SELECT b.id, b.ride_id, b.rider_id, ur.name,
 		        ri.driver_id, ud.name,
-		        ri.origin_label, ri.dest_label, ri.departure_at,
+		        COALESCE(b.pickup_label, ri.origin_label), COALESCE(b.dropoff_label, ri.dest_label), ri.departure_at,
 		        b.seats, b.status, ri.status, b.total_price, ri.price_per_seat, b.created_at,
 		        b.picked_up_at, b.dropped_at,
 		        ur.avg_rating,
