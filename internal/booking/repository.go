@@ -46,13 +46,15 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 	var rideDriverID string
 	var rideStatus string
 	var departureAt time.Time
+	var rideOriginLabel string
+	var rideDestLabel string
 	err = tx.QueryRow(ctx,
-		`SELECT route, total_seats, available_seats, price_per_seat, driver_id, status, departure_at
+		`SELECT route, total_seats, available_seats, price_per_seat, driver_id, status, departure_at, origin_label, dest_label
 		 FROM rides
 		 WHERE id = $1
 		 FOR UPDATE`,
 		req.RideID,
-	).Scan(&route, &totalSeats, &availableSeats, &pricePerSeat, &rideDriverID, &rideStatus, &departureAt)
+	).Scan(&route, &totalSeats, &availableSeats, &pricePerSeat, &rideDriverID, &rideStatus, &departureAt, &rideOriginLabel, &rideDestLabel)
 	if err != nil {
 		slog.Warn("ride not found or unavailable for booking", "ride_id", req.RideID, "error", err)
 		return nil, fmt.Errorf("ride not found")
@@ -162,11 +164,11 @@ func (r *Repository) Create(ctx context.Context, riderID string, req CreateReque
 		idempVal = &req.IdempotencyKey
 	}
 	err = tx.QueryRow(ctx,
-		`INSERT INTO bookings (ride_id, rider_id, seats, total_price, pickup_fraction, dropoff_fraction, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, pickup_label, dropoff_label, idempotency_key)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		`INSERT INTO bookings (ride_id, rider_id, seats, total_price, pickup_fraction, dropoff_fraction, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, pickup_label, dropoff_label, ride_origin_label, ride_dest_label, idempotency_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		 RETURNING id, status`,
 		req.RideID, riderID, req.Seats, totalPrice, pickupFraction, dropoffFraction,
-		req.PickupLat, req.PickupLng, req.DropoffLat, req.DropoffLng, req.PickupLabel, req.DropoffLabel, idempVal,
+		req.PickupLat, req.PickupLng, req.DropoffLat, req.DropoffLng, req.PickupLabel, req.DropoffLabel, rideOriginLabel, rideDestLabel, idempVal,
 	).Scan(&bookingID, &status)
 	if err != nil {
 		var pgErr *pgconn.PgError
