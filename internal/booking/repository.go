@@ -584,6 +584,30 @@ func (r *Repository) CheckDriverLocation(ctx context.Context, bookingID string, 
 	return isWithin, nil
 }
 
+func (r *Repository) CheckRiderLocation(ctx context.Context, bookingID string, riderLat, riderLng float64) (bool, error) {
+	var isWithin bool
+	// Check if rider is within 200m of their own pickup point
+	err := r.db.QueryRow(ctx,
+		`SELECT ST_DWithin(
+			ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+			ST_SetSRID(ST_MakePoint(
+				COALESCE(b.pickup_lng, ri.origin_lng),
+				COALESCE(b.pickup_lat, ri.origin_lat)
+			), 4326)::geography,
+			200
+		)
+		FROM bookings b
+		JOIN rides ri ON ri.id = b.ride_id
+		WHERE b.id = $3`,
+		riderLng, riderLat, bookingID,
+	).Scan(&isWithin)
+	if err != nil {
+		slog.Error("CheckRiderLocation query failed", "error", err, "booking_id", bookingID)
+		return false, err
+	}
+	return isWithin, nil
+}
+
 func (r *Repository) CancelPendingBookingsOnRide(ctx context.Context, rideID, excludeBookingID string) ([]*Booking, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {

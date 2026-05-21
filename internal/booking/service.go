@@ -135,3 +135,7 @@ func (s *Service) MarkNoShow(ctx context.Context, id, driverID string) (*Booking
 func (s *Service) CheckDriverLocation(ctx context.Context, bookingID string, lat, lng float64) (bool, error) {
 	return s.repo.CheckDriverLocation(ctx, bookingID, lat, lng)
 }
+
+func (s *Service) CheckRiderLocation(ctx context.Context, bookingID string, lat, lng float64) (bool, error) {
+	return s.repo.CheckRiderLocation(ctx, bookingID, lat, lng)
+}

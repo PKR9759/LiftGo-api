@@ -399,6 +399,13 @@ func (h *Handler) RiderReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isWithin, err := h.service.CheckRiderLocation(r.Context(), id, *body.RiderLat, *body.RiderLng)
+	if (err != nil || !isWithin) && os.Getenv("APP_ENV") != "development" {
+		slog.Warn("rider not close enough to pickup point", "request_id", reqID, "booking_id", id)
+		utils.WriteError(w, http.StatusBadRequest, "You must be within 200 meters of your pickup point to mark ready")
+		return
+	}
+
 	booking, err := h.service.MarkRiderReady(r.Context(), id, claims.UserID, body.RiderLat, body.RiderLng)
 	if err != nil {
 		slog.Error("RiderReady mark failed", "error", err, "request_id", reqID)
